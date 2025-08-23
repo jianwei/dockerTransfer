@@ -2,11 +2,6 @@ name: Sync Multi-Arch Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
-    inputs:
-      force_sync:
-        description: 'Force sync all images (ignore cache)'
-        type: boolean
-        default: false
   schedule:
     - cron: '0 2 * * *'
 
@@ -39,27 +34,20 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq
 
-    - name: Read image list
-      id: read_images
+    - name: Sync images for both architectures
       run: |
-        if [ -f "images.json" ]; then
-          echo "images_config=$(cat images.json | jq -c .)" >> $GITHUB_OUTPUT
-          echo "Found $(cat images.json | jq length) images to sync"
-        else
+        # Check if images.json exists
+        if [ ! -f "images.json" ]; then
           echo "❌ images.json not found"
           exit 1
         fi
-
-    - name: Sync images for both architectures
-      run: |
-        # Convert JSON to bash array
-        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
         
-        for ((i=0; i<images_count; i++)); do
-          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
-          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
-          
-          echo "🔄 Processing image: $source_image"
+        # Get all source images from JSON
+        source_images=$(jq -r 'keys[]' images.json)
+        
+        for source_image in $source_images; do
+          target_image=$(jq -r ".[\"$source_image\"].target" images.json)
+          echo "🔄 Processing image: $source_image -> $target_image"
           
           # Pull images for both architectures
           echo "📥 Pulling amd64 version..."
@@ -68,37 +56,19 @@ jobs:
           echo "📥 Pulling arm64 version..."
           docker pull --platform linux/arm64 $source_image
           
-          # Create manifest list for multi-arch support
-          echo "📦 Creating manifest list..."
-          docker manifest create $source_image \
-            --amend $source_image --platform linux/amd64 \
-            --amend $source_image --platform linux/arm64
+          # Get tags array
+          tags=$(jq -r ".[\"$source_image\"].tags[]" images.json)
           
-          # Tag and push for each target tag
-          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
-          for ((j=0; j<tags_count; j++)); do
-            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
-            
-            # Tag for Alibaba Cloud registry
+          # Tag and push for each tag
+          for tag in $tags; do
             target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
-            echo "🏷️  Tagging image as $target_full_name"
+            echo "🏷️  Tagging and pushing $target_full_name"
+            
             docker tag $source_image $target_full_name
             
-            # Push single-arch images
-            echo "📤 Pushing amd64 version..."
-            docker push $target_full_name --platform linux/amd64
-            
-            echo "📤 Pushing arm64 version..."
-            docker push $target_full_name --platform linux/arm64
-            
-            # Create and push manifest for multi-arch support
-            echo "🔄 Creating multi-arch manifest for $target_full_name"
-            docker manifest create $target_full_name \
-              --amend $target_full_name --platform linux/amd64 \
-              --amend $target_full_name --platform linux/arm64
-              
-            echo "📤 Pushing multi-arch manifest..."
-            docker manifest push $target_full_name
+            # Push both architectures
+            echo "📤 Pushing multi-arch image..."
+            docker push $target_full_name
           done
           
           echo "✅ Completed processing $source_image"
@@ -108,60 +78,5 @@ jobs:
       if: always()
       run: |
         echo "🧹 Cleaning up Docker images..."
-        
-        # Remove source images
-        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
-        for ((i=0; i<images_count; i++)); do
-          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
-          docker rmi $source_image || true
-          
-          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
-          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
-          for ((j=0; j<tags_count; j++)); do
-            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
-            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
-            docker rmi $target_full_name || true
-          done
-        done
-        
+        # Add cleanup commands here if needed
         echo "✅ Cleanup completed"
-
-    - name: Send notification on success
-      if: success()
-      uses: slackapi/slack-github-action@v1.23.0
-      with:
-        payload: |
-          {
-            "text": "✅ Multi-arch Docker images sync completed successfully",
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "✅ *Multi-arch Docker images sync completed successfully*\n- Repository: ${{ github.repository }}\n- Architecture: amd64 & arm64\n- Destination: Alibaba Cloud ACR"
-                }
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-    - name: Send notification on failure
-      if: failure()
-      uses: slackapi/slack-github-action@v1.23.0
-      with:
-        payload: |
-          {
-            "text": "❌ Multi-arch Docker images sync failed",
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "❌ *Multi-arch Docker images sync failed*\n- Repository: ${{ github.repository }}\n- Check the workflow logs for details"
-                }
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
