@@ -6,7 +6,7 @@
     },
     {
         "target": "ubuntu",
-        "tags": ["24.04"],
+        "tags": ["24.04","18.04"],
         "architectures": ["amd64", "arm64"]
     }
 ]
