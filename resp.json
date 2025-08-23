@@ -2,6 +2,11 @@
     {
         "target": "centos",
         "tags": ["centos7.9.2009", "centos8", "latest"],
-        "architectures": ["amd64", "arm64","360"]
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "target": "ubuntu",
+        "tags": ["24.04"],
+        "architectures": ["amd64", "arm64"]
     }
 ]
