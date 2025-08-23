@@ -1,4 +1,4 @@
-name: Sync  Docker Images to Alibaba Cloud
+name: Sync Multi-Arch Docker Images2
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
           exit 1
         fi
 
-    - name: Get latest tags from Docker Hub
+    - name: Get latest tags from Docker Hub and merge with config
       id: get_tags
       run: |
         echo "=== Creating updated images config ==="
@@ -72,26 +72,37 @@ jobs:
           
           echo "Processing $source_base -> $target"
           
+          # Get tags from config
+          config_tags_array=$(jq ".[$i].tags | if type == \"array\" then . else [] end" resp.json)
+          config_tags_count=$(echo "$config_tags_array" | jq 'length')
+          echo "Config tags count: $config_tags_count"
+          echo "Config tags: $(echo "$config_tags_array" | jq -r '.[]')"
+          
           # Get latest 10 tags from Docker Hub API
-          echo "Fetching tags for $source_base..."
+          echo "Fetching latest tags for $source_base..."
           
           # Try library/ prefix first (for official images)
           tags_data=$(curl -s "https://hub.docker.com/v2/repositories/library/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
           
           # Extract tag names
-          tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
+          latest_tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
           
           # If no tags found, try without library prefix
-          if [ "$(echo "$tags_array" | jq 'length')" -eq 0 ] || [ "$(echo "$tags_data" | jq -r '.results | length')" -eq 0 ]; then
+          if [ "$(echo "$latest_tags_array" | jq 'length')" -eq 0 ] || [ "$(echo "$tags_data" | jq -r '.results | length')" -eq 0 ]; then
             echo "Trying without library prefix..."
             tags_data=$(curl -s "https://hub.docker.com/v2/repositories/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
-            tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
+            latest_tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
           fi
           
-          echo "Found $(echo "$tags_array" | jq 'length') tags"
+          echo "Latest tags count: $(echo "$latest_tags_array" | jq 'length')"
+          echo "Latest tags: $(echo "$latest_tags_array" | jq -r '.[]')"
           
-          # Show found tags for debugging
-          echo "Tags: $(echo "$tags_array" | jq -r '.[]')"
+          # Merge config tags and latest tags, remove duplicates
+          echo "Merging and deduplicating tags..."
+          merged_tags_array=$(echo "{\"config\": $config_tags_array, \"latest\": $latest_tags_array}" | jq -c '[.config[], .latest[]] | unique')
+          
+          echo "Final merged tags count: $(echo "$merged_tags_array" | jq 'length')"
+          echo "Final merged tags: $(echo "$merged_tags_array" | jq -r '.[]')"
           
           # Create new entry
           if [ $i -gt 0 ]; then
@@ -101,7 +112,7 @@ jobs:
           echo "{" >> images_updated.json
           echo "  \"source_base\": \"$source_base\"," >> images_updated.json
           echo "  \"target\": \"$target\"," >> images_updated.json
-          echo "  \"tags\": $(echo "$tags_array" | jq -c .)" >> images_updated.json
+          echo "  \"tags\": $(echo "$merged_tags_array" | jq -c .)" >> images_updated.json
           echo "}" >> images_updated.json
         done
         
@@ -111,7 +122,7 @@ jobs:
         cat images_updated.json
         echo ""
 
-    - name: Process images with latest tags
+    - name: Process images with merged tags
       run: |
         echo "=== Starting image processing ==="
         
