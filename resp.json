@@ -1,19 +1,15 @@
 [
     {
-        "target": "centos"
+        "target": "centos",
+        "tags": ["centos7.9.2009", "centos8", "latest"]
     },
     {
-        "target": "nginx"
-    },
-    {
-        "target": "alpine"
+        "target": "nginx",
+        "tags": ["1.21", "alpine"]
     },
     {
         "source": "library/ubuntu",
-        "target": "ubuntu"
-    },
-    {
-        "source": "redis",
-        "target": "my-redis"
+        "target": "ubuntu",
+        "tags": ["20.04", "22.04"]
     }
 ]
