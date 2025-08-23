@@ -61,21 +61,55 @@ jobs:
             
             # Create amd64 version
             amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
-            echo "📥 Pulling and pushing amd64 version to $amd64_target..."
-            if docker buildx imagetools create --tag "$amd64_target" "$source" --platform linux/amd64; then
-              echo "✅ amd64 version pushed successfully"
+            echo "📥 Pulling $source for amd64..."
+            if docker pull --platform linux/amd64 "$source"; then
+              echo "✅ amd64 pull successful"
+              echo "📦 Tagging as $amd64_target"
+              if docker tag "$source" "$amd64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$amd64_target"; then
+                  echo "✅ amd64 version pushed successfully: $amd64_target"
+                else
+                  echo "❌ Failed to push amd64 version"
+                fi
+              else
+                echo "❌ Failed to tag amd64 version"
+              fi
+              # Clean up
+              docker rmi "$source" || true
             else
-              echo "❌ Failed to push amd64 version"
+              echo "❌ Failed to pull amd64 version"
             fi
             
             # Create arm64 version
             arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
-            echo "📥 Pulling and pushing arm64 version to $arm64_target..."
-            if docker buildx imagetools create --tag "$arm64_target" "$source" --platform linux/arm64; then
-              echo "✅ arm64 version pushed successfully"
+            echo "📥 Pulling $source for arm64..."
+            if docker pull --platform linux/arm64 "$source"; then
+              echo "✅ arm64 pull successful"
+              echo "📦 Tagging as $arm64_target"
+              if docker tag "$source" "$arm64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$arm64_target"; then
+                  echo "✅ arm64 version pushed successfully: $arm64_target"
+                else
+                  echo "❌ Failed to push arm64 version"
+                fi
+              else
+                echo "❌ Failed to tag arm64 version"
+              fi
+              # Clean up
+              docker rmi "$source" || true
             else
-              echo "❌ Failed to push arm64 version"
+              echo "❌ Failed to pull arm64 version"
             fi
+            
+            # Clean up tagged images
+            docker rmi "$amd64_target" || true
+            docker rmi "$arm64_target" || true
           done
         done
 
@@ -83,3 +117,5 @@ jobs:
       if: always()
       run: |
         echo "🏁 Processing completed"
+        echo "=== Final Docker images ==="
+        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
