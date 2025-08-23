@@ -1,0 +1,6 @@
+images:
+  - repo: centos
+    tag: centos7.9.2009
+# 可以添加更多镜像，例如：
+#  - repo: another-image
+#    tag: version
