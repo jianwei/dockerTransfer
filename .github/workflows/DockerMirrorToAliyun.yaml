@@ -54,19 +54,6 @@ jobs:
             continue
           fi
           
-          # Pull images for both architectures
-          echo "📥 Pulling $source for amd64..."
-          if ! docker pull --platform linux/amd64 "$source"; then
-            echo "❌ Failed to pull amd64 version"
-            continue
-          fi
-          
-          echo "📥 Pulling $source for arm64..."
-          if ! docker pull --platform linux/arm64 "$source"; then
-            echo "❌ Failed to pull arm64 version"
-            continue
-          fi
-          
           # Process tags - create separate images for each architecture
           for j in $(seq 0 $((tag_count-1))); do
             tag=$(jq -r ".[$i].tags[$j]" images.json)
@@ -74,22 +61,20 @@ jobs:
             
             # Create amd64 version
             amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
-            echo "📦 Tagging amd64 version as $amd64_target"
-            if docker tag "$source" "$amd64_target"; then
-              echo "📤 Pushing amd64 version..."
-              docker push "$amd64_target" --platform linux/amd64
+            echo "📥 Pulling and pushing amd64 version to $amd64_target..."
+            if docker buildx imagetools create --tag "$amd64_target" "$source" --platform linux/amd64; then
+              echo "✅ amd64 version pushed successfully"
             else
-              echo "❌ Failed to tag amd64 version"
+              echo "❌ Failed to push amd64 version"
             fi
             
             # Create arm64 version
             arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
-            echo "📦 Tagging arm64 version as $arm64_target"
-            if docker tag "$source" "$arm64_target"; then
-              echo "📤 Pushing arm64 version..."
-              docker push "$arm64_target" --platform linux/arm64
+            echo "📥 Pulling and pushing arm64 version to $arm64_target..."
+            if docker buildx imagetools create --tag "$arm64_target" "$source" --platform linux/arm64; then
+              echo "✅ arm64 version pushed successfully"
             else
-              echo "❌ Failed to tag arm64 version"
+              echo "❌ Failed to push arm64 version"
             fi
           done
         done
@@ -97,5 +82,4 @@ jobs:
     - name: Summary
       if: always()
       run: |
-        echo "🧹 Cleaning up..."
-        # Add cleanup commands here if needed
+        echo "🏁 Processing completed"
