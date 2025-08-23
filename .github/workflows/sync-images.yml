@@ -1,7 +1,12 @@
-name: Sync Multi-Arch Docker Images to Alibaba Cloud2
+name: Sync Multi-Arch Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Specific image to sync (e.g., centos, nginx). Leave empty for all images.'
+        required: false
+        type: string
   schedule:
     - cron: '0 2 * * *'
 
@@ -19,48 +24,157 @@ jobs:
     - name: Login to Alibaba Cloud Container Registry
       uses: docker/login-action@v2
       with:
-        registry: registry.cn-hangzhou.aliyuncs.com
+        registry: ${{ secrets.ALIYUN_REGISTRY }}
         username: ${{ secrets.ALIYUN_USERNAME }}
         password: ${{ secrets.ALIYUN_PASSWORD }}
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y jq
+        sudo apt-get install -y jq curl
 
-    - name: Process images
+    - name: Debug - Show resp.json content
+      run: |
+        echo "=== Check if resp.json exists ==="
+        ls -la
+        echo ""
+        
+        echo "=== resp.json content ==="
+        if [ -f "resp.json" ]; then
+          cat resp.json
+          echo ""
+          echo "=== Validate JSON ==="
+          jq '.' resp.json
+        else
+          echo "❌ resp.json not found"
+          exit 1
+        fi
+
+    - name: Get latest tags from Docker Hub
+      id: get_tags
+      run: |
+        echo "=== Creating updated images config ==="
+        echo "[" > images_updated.json
+        
+        count=$(jq 'length' resp.json)
+        echo "Found $count images in resp.json"
+        
+        for i in $(seq 0 $((count-1))); do
+          target=$(jq -r ".[$i].target" resp.json)
+          
+          # If source exists in config, use it, otherwise use target as source
+          source_exists=$(jq ".[$i] | has(\"source\")" resp.json)
+          if [ "$source_exists" = "true" ]; then
+            source_base=$(jq -r ".[$i].source" resp.json)
+          else
+            source_base="$target"
+          fi
+          
+          echo "Processing $source_base -> $target"
+          
+          # Get latest 10 tags from Docker Hub API
+          echo "Fetching tags for $source_base..."
+          
+          # Try library/ prefix first (for official images)
+          tags_data=$(curl -s "https://hub.docker.com/v2/repositories/library/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
+          
+          # Extract tag names
+          tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
+          
+          # If no tags found, try without library prefix
+          if [ "$(echo "$tags_array" | jq 'length')" -eq 0 ] || [ "$(echo "$tags_data" | jq -r '.results | length')" -eq 0 ]; then
+            echo "Trying without library prefix..."
+            tags_data=$(curl -s "https://hub.docker.com/v2/repositories/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
+            tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
+          fi
+          
+          echo "Found $(echo "$tags_array" | jq 'length') tags"
+          
+          # Show found tags for debugging
+          echo "Tags: $(echo "$tags_array" | jq -r '.[]')"
+          
+          # Create new entry
+          if [ $i -gt 0 ]; then
+            echo "," >> images_updated.json
+          fi
+          
+          echo "{" >> images_updated.json
+          echo "  \"source_base\": \"$source_base\"," >> images_updated.json
+          echo "  \"target\": \"$target\"," >> images_updated.json
+          echo "  \"tags\": $(echo "$tags_array" | jq -c .)" >> images_updated.json
+          echo "}" >> images_updated.json
+        done
+        
+        echo "]" >> images_updated.json
+        
+        echo "=== Updated images config ==="
+        cat images_updated.json
+        echo ""
+
+    - name: Process images with latest tags
       run: |
         echo "=== Starting image processing ==="
         
-        # Read the JSON file directly in the shell
-        count=$(jq 'length' images.json)
+        # Use updated config
+        config_file="images_updated.json"
+        
+        # Check if specific image is requested
+        specific_image="${{ github.event.inputs.image_name }}"
+        if [ -n "$specific_image" ]; then
+          echo "Filtering for specific image: $specific_image"
+          jq --arg target "$specific_image" 'map(select(.target == $target))' "$config_file" > temp_config.json
+          if [ "$(jq 'length' temp_config.json)" -gt 0 ]; then
+            config_file="temp_config.json"
+            echo "Filtered config:"
+            cat temp_config.json
+          else
+            echo "No matching image found for $specific_image"
+            exit 0
+          fi
+        fi
+        
+        # Read the JSON file
+        count=$(jq 'length' "$config_file")
         echo "Found $count images to process"
         
-        # Simple loop with proper error handling
+        if [ "$count" -eq 0 ]; then
+          echo "No images to process"
+          exit 0
+        fi
+        
+        # Process images
+        success_count=0
         for i in $(seq 0 $((count-1))); do
-          echo "=== Processing image $((i+1)) ==="
+          echo "=== Processing image $((i+1))/$count ==="
           
-          # Extract values one by one with error checking
-          source=$(jq -r ".[$i].source" images.json)
-          target=$(jq -r ".[$i].target" images.json)
-          tag_count=$(jq ".[$i].tags | length" images.json)
+          # Extract values
+          source_base=$(jq -r ".[$i].source_base" "$config_file")
+          target=$(jq -r ".[$i].target" "$config_file")
+          tag_count=$(jq ".[$i].tags | length" "$config_file")
           
-          echo "Source: $source"
+          echo "Source base: $source_base"
           echo "Target: $target"
           echo "Tag count: $tag_count"
           
-          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
-            echo "❌ Invalid data at index $i"
+          if [ "$target" = "null" ] || [ "$tag_count" -eq 0 ]; then
+            echo "❌ No data for index $i"
             continue
           fi
           
-          # Process tags - create separate images for each architecture
+          # Process each tag
           for j in $(seq 0 $((tag_count-1))); do
-            tag=$(jq -r ".[$i].tags[$j]" images.json)
-            echo "🏷️  Processing tag: $tag"
+            tag=$(jq -r ".[$i].tags[$j]" "$config_file")
+            if [ "$tag" = "null" ] || [ -z "$tag" ]; then
+              echo "❌ Invalid tag at index $j"
+              continue
+            fi
             
-            # Create amd64 version
-            amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
+            source="${source_base}:${tag}"
+            echo "🏷️  Processing tag: $tag ($source)"
+            
+            # Process amd64 version
+            amd64_success=false
+            amd64_target="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
             echo "📥 Pulling $source for amd64..."
             if docker pull --platform linux/amd64 "$source"; then
               echo "✅ amd64 pull successful"
@@ -68,23 +182,25 @@ jobs:
               if docker tag "$source" "$amd64_target"; then
                 echo "✅ Tag successful"
                 echo "📤 Pushing to registry..."
-                # Use --platform to ensure correct architecture is pushed
                 if docker push "$amd64_target"; then
                   echo "✅ amd64 version pushed successfully: $amd64_target"
+                  amd64_success=true
                 else
                   echo "❌ Failed to push amd64 version"
                 fi
+                docker rmi "$source" || true
               else
                 echo "❌ Failed to tag amd64 version"
+                docker rmi "$source" || true
               fi
-              # Clean up
-              docker rmi "$source" || true
+              docker rmi "$amd64_target" || true
             else
-              echo "❌ Failed to pull amd64 version"
+              echo "❌ Failed to pull amd64 version of $source"
             fi
             
-            # Create arm64 version
-            arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
+            # Process arm64 version
+            arm64_success=false
+            arm64_target="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
             echo "📥 Pulling $source for arm64..."
             if docker pull --platform linux/arm64 "$source"; then
               echo "✅ arm64 pull successful"
@@ -92,30 +208,38 @@ jobs:
               if docker tag "$source" "$arm64_target"; then
                 echo "✅ Tag successful"
                 echo "📤 Pushing to registry..."
-                # Use --platform to ensure correct architecture is pushed
                 if docker push "$arm64_target"; then
                   echo "✅ arm64 version pushed successfully: $arm64_target"
+                  arm64_success=true
                 else
                   echo "❌ Failed to push arm64 version"
                 fi
+                docker rmi "$source" || true
               else
                 echo "❌ Failed to tag arm64 version"
+                docker rmi "$source" || true
               fi
-              # Clean up
-              docker rmi "$source" || true
+              docker rmi "$arm64_target" || true
             else
-              echo "❌ Failed to pull arm64 version"
+              echo "❌ Failed to pull arm64 version of $source"
             fi
             
-            # Clean up tagged images
-            docker rmi "$amd64_target" || true
-            docker rmi "$arm64_target" || true
+            # Count success
+            if [ "$amd64_success" = true ] || [ "$arm64_success" = true ]; then
+              success_count=$((success_count + 1))
+            fi
           done
         done
+        
+        echo "=== Processing Summary ==="
+        echo "Total successful uploads: $success_count"
 
     - name: Summary
       if: always()
       run: |
-        echo "🏁 Processing completed"
-        echo "=== Final Docker images ==="
-        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
+        echo "🏁 Sync process completed"
+        echo "Repository: ${{ github.repository }}"
+        echo "Run ID: ${{ github.run_id }}"
+        echo "Registry: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}"
+        echo "=== Recent Docker images in registry ==="
+        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" | head -20 || echo "No images found"
