@@ -1,0 +1,19 @@
+[
+    {
+        "target": "centos"
+    },
+    {
+        "target": "nginx"
+    },
+    {
+        "target": "alpine"
+    },
+    {
+        "source": "library/ubuntu",
+        "target": "ubuntu"
+    },
+    {
+        "source": "redis",
+        "target": "my-redis"
+    }
+]
