@@ -1,6 +1,13 @@
 images:
   - repo: centos
-    tag: centos7.9.2009
-# 可以添加更多镜像，例如：
-#  - repo: another-image
-#    tag: version
+    tags:
+      - centos7.9.2009
+      - latest
+  - repo: ubuntu
+    tags:
+      - latest
+      - 22.04
+  - repo: alpine
+    tags:
+      - latest
+      - 3.18
