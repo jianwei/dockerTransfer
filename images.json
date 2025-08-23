@@ -1,17 +1,14 @@
-[
-  {
-    "source": "centos:centos7.9.2009",
+{
+  "centos:centos7.9.2009": {
     "target": "centos",
     "tags": ["centos7.9.2009", "7.9.2009", "7"]
   },
-  {
-    "source": "nginx:1.21",
+  "nginx:1.21": {
     "target": "nginx",
     "tags": ["1.21", "latest"]
   },
-  {
-    "source": "alpine:3.16",
+  "alpine:3.16": {
     "target": "alpine",
     "tags": ["3.16", "latest"]
   }
-]
+}
