@@ -1,15 +1,12 @@
 [
     {
         "target": "centos",
-        "tags": ["centos7.9.2009", "centos8", "latest"]
+        "tags": ["centos7.9.2009", "centos8", "latest"],
+        "architectures": ["amd64", "arm64"]
     },
     {
         "target": "nginx",
-        "tags": ["1.21", "alpine"]
-    },
-    {
-        "source": "library/ubuntu",
-        "target": "ubuntu",
-        "tags": ["20.04", "22.04"]
+        "tags": ["1.21", "alpine"],
+        "architectures": ["amd64", "arm64"]
     }
 ]
