@@ -54,31 +54,47 @@ jobs:
             continue
           fi
           
-          # Pull images
+          # Pull images for both architectures
           echo "📥 Pulling $source for amd64..."
-          docker pull --platform linux/amd64 "$source"
+          if ! docker pull --platform linux/amd64 "$source"; then
+            echo "❌ Failed to pull amd64 version"
+            continue
+          fi
           
           echo "📥 Pulling $source for arm64..."
-          docker pull --platform linux/arm64 "$source"
+          if ! docker pull --platform linux/arm64 "$source"; then
+            echo "❌ Failed to pull arm64 version"
+            continue
+          fi
           
-          # Process tags
+          # Process tags - create separate images for each architecture
           for j in $(seq 0 $((tag_count-1))); do
             tag=$(jq -r ".[$i].tags[$j]" images.json)
             echo "🏷️  Processing tag: $tag"
             
-            full_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target:$tag"
-            echo "📦 Tagging as $full_target"
-            docker tag "$source" "$full_target"
+            # Create amd64 version
+            amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
+            echo "📦 Tagging amd64 version as $amd64_target"
+            if docker tag "$source" "$amd64_target"; then
+              echo "📤 Pushing amd64 version..."
+              docker push "$amd64_target" --platform linux/amd64
+            else
+              echo "❌ Failed to tag amd64 version"
+            fi
             
-            echo "📤 Pushing amd64 version..."
-            docker push "$full_target" --platform linux/amd64
-            
-            echo "📤 Pushing arm64 version..."
-            docker push "$full_target" --platform linux/arm64
+            # Create arm64 version
+            arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
+            echo "📦 Tagging arm64 version as $arm64_target"
+            if docker tag "$source" "$arm64_target"; then
+              echo "📤 Pushing arm64 version..."
+              docker push "$arm64_target" --platform linux/arm64
+            else
+              echo "❌ Failed to tag arm64 version"
+            fi
           done
         done
 
-    - name: Cleanup
+    - name: Summary
       if: always()
       run: |
         echo "🧹 Cleaning up..."
