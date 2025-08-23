@@ -37,8 +37,19 @@ jobs:
       id: read_images
       run: |
         if [ -f "images.json" ]; then
+          echo "Validating images.json..."
+          cat images.json
+          echo ""
+          
+          # Validate JSON format
+          if ! jq empty images.json; then
+            echo "❌ Invalid JSON format"
+            exit 1
+          fi
+          
           echo "images_config=$(cat images.json | jq -c .)" >> $GITHUB_OUTPUT
-          echo "Found $(cat images.json | jq length) images to sync"
+          count=$(cat images.json | jq 'length')
+          echo "Found $count images to sync"
         else
           echo "❌ images.json not found"
           exit 1
@@ -46,42 +57,62 @@ jobs:
 
     - name: Sync images for both architectures
       run: |
+        # Get the images config
+        images_config='${{ steps.read_images.outputs.images_config }}'
+        echo "Images config loaded successfully"
+        
         # Convert JSON to bash array
-        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
+        images_count=$(echo "$images_config" | jq 'length')
         
         echo "📦 Total images to sync: $images_count"
         
         for ((i=0; i<images_count; i++)); do
-          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
-          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
+          source_image=$(echo "$images_config" | jq -r ".[$i].source")
+          target_image=$(echo "$images_config" | jq -r ".[$i].target")
           
-          echo "🔄 Processing image: $source_image -> $target_image"
+          echo "🔄 Processing image $((i+1))/$images_count: $source_image -> $target_image"
           
           # Pull images for both architectures
           echo "📥 Pulling amd64 version..."
-          docker pull --platform linux/amd64 $source_image
+          if ! docker pull --platform linux/amd64 $source_image; then
+            echo "❌ Failed to pull amd64 version of $source_image"
+            continue
+          fi
           
           echo "📥 Pulling arm64 version..."
-          docker pull --platform linux/arm64 $source_image
+          if ! docker pull --platform linux/arm64 $source_image; then
+            echo "❌ Failed to pull arm64 version of $source_image"
+            continue
+          fi
           
           # Tag and push for each target tag
-          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          tags_count=$(echo "$images_config" | jq ".[$i].tags | length")
           echo "🏷️  Number of tags to process: $tags_count"
           
           for ((j=0; j<tags_count; j++)); do
-            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
+            tag=$(echo "$images_config" | jq -r ".[$i].tags[$j]")
             
             # Tag for Alibaba Cloud registry
             target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
             echo "🏷️  Tagging image as $target_full_name"
-            docker tag $source_image $target_full_name
+            
+            if ! docker tag $source_image $target_full_name; then
+              echo "❌ Failed to tag image"
+              continue
+            fi
             
             # Push both architectures
             echo "📤 Pushing amd64 version..."
-            docker push $target_full_name --platform linux/amd64
+            if ! docker push $target_full_name --platform linux/amd64; then
+              echo "❌ Failed to push amd64 version"
+              continue
+            fi
             
             echo "📤 Pushing arm64 version..."
-            docker push $target_full_name --platform linux/arm64
+            if ! docker push $target_full_name --platform linux/arm64; then
+              echo "❌ Failed to push arm64 version"
+              continue
+            fi
             
             echo "✅ Tag $tag pushed successfully"
           done
@@ -96,17 +127,19 @@ jobs:
         echo "🧹 Cleaning up Docker images..."
         
         # Remove source images
-        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
+        images_config='${{ steps.read_images.outputs.images_config }}'
+        images_count=$(echo "$images_config" | jq 'length')
+        
         for ((i=0; i<images_count; i++)); do
-          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
+          source_image=$(echo "$images_config" | jq -r ".[$i].source")
           echo "🗑️  Removing $source_image"
           docker rmi $source_image || true
           
-          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
-          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          target_image=$(echo "$images_config" | jq -r ".[$i].target")
+          tags_count=$(echo "$images_config" | jq ".[$i].tags | length")
           
           for ((j=0; j<tags_count; j++)); do
-            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
+            tag=$(echo "$images_config" | jq -r ".[$i].tags[$j]")
             target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
             echo "🗑️  Removing $target_full_name"
             docker rmi $target_full_name || true
