@@ -1,4 +1,4 @@
-name: Sync Multi-Arch Docker Images to Alibaba Cloud
+name: Sync  Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
