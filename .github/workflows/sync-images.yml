@@ -33,310 +33,165 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq curl
 
-    - name: Debug - Show resp.json content
+    - name: Validate and process config
       run: |
-        echo "=== Check if resp.json exists ==="
-        ls -la
-        echo ""
+        echo "=== Validating resp.json ==="
         
-        echo "=== resp.json content ==="
-        if [ -f "resp.json" ]; then
-          cat resp.json
-          echo ""
-          echo "=== Validate JSON ==="
-          jq '.' resp.json
-        else
+        # Check if file exists
+        if [ ! -f "resp.json" ]; then
           echo "❌ resp.json not found"
           exit 1
         fi
-
-    - name: Get latest tags from Docker Hub and merge with config
-      id: get_tags
-      run: |
-        echo "=== Creating updated images config ==="
-        echo "[" > images_updated.json
         
-        count=$(jq 'length' resp.json)
-        echo "Found $count images in resp.json"
-        
-        for i in $(seq 0 $((count-1))); do
-          target=$(jq -r ".[$i].target" resp.json)
-          
-          # If source exists in config, use it, otherwise use target as source
-          source_exists=$(jq ".[$i] | has(\"source\")" resp.json)
-          if [ "$source_exists" = "true" ]; then
-            source_base=$(jq -r ".[$i].source" resp.json)
-          else
-            source_base="$target"
-          fi
-          
-          # Get architectures from config, default to amd64 and arm64
-          arch_exists=$(jq ".[$i] | has(\"architectures\")" resp.json)
-          if [ "$arch_exists" = "true" ]; then
-            architectures_array=$(jq ".[$i].architectures" resp.json)
-          else
-            architectures_array='["amd64", "arm64"]'
-          fi
-          
-          echo "Processing $source_base -> $target"
-          echo "Architectures: $(echo "$architectures_array" | jq -r '.[]')"
-          
-          # Get tags from config
-          config_tags_array=$(jq ".[$i].tags | if type == \"array\" then . else [] end" resp.json)
-          config_tags_count=$(echo "$config_tags_array" | jq 'length')
-          echo "Config tags count: $config_tags_count"
-          echo "Config tags: $(echo "$config_tags_array" | jq -r '.[]')"
-          
-          # Get latest 10 tags from Docker Hub API
-          echo "Fetching latest tags for $source_base..."
-          
-          # Try library/ prefix first (for official images)
-          tags_data=$(curl -s "https://hub.docker.com/v2/repositories/library/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
-          
-          # Extract tag names
-          latest_tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
-          
-          # If no tags found, try without library prefix
-          if [ "$(echo "$latest_tags_array" | jq 'length')" -eq 0 ] || [ "$(echo "$tags_data" | jq -r '.results | length')" -eq 0 ]; then
-            echo "Trying without library prefix..."
-            tags_data=$(curl -s "https://hub.docker.com/v2/repositories/${source_base}/tags/?page_size=10&page=1" 2>/dev/null || echo '{"results":[]}')
-            latest_tags_array=$(echo "$tags_data" | jq -r '.results[].name' | head -10 | jq -R . | jq -s .)
-          fi
-          
-          echo "Latest tags count: $(echo "$latest_tags_array" | jq 'length')"
-          echo "Latest tags: $(echo "$latest_tags_array" | jq -r '.[]')"
-          
-          # Merge config tags and latest tags, remove duplicates
-          echo "Merging and deduplicating tags..."
-          merged_tags_array=$(echo "{\"config\": $config_tags_array, \"latest\": $latest_tags_array}" | jq -c '[.config[], .latest[]] | unique')
-          
-          echo "Final merged tags count: $(echo "$merged_tags_array" | jq 'length')"
-          echo "Final merged tags: $(echo "$merged_tags_array" | jq -r '.[]')"
-          
-          # Create new entry
-          if [ $i -gt 0 ]; then
-            echo "," >> images_updated.json
-          fi
-          
-          echo "{" >> images_updated.json
-          echo "  \"source_base\": \"$source_base\"," >> images_updated.json
-          echo "  \"target\": \"$target\"," >> images_updated.json
-          echo "  \"tags\": $(echo "$merged_tags_array" | jq -c .)," >> images_updated.json
-          echo "  \"architectures\": $(echo "$architectures_array" | jq -c .)" >> images_updated.json
-          echo "}" >> images_updated.json
-        done
-        
-        echo "]" >> images_updated.json
-        
-        echo "=== Updated images config ==="
-        cat images_updated.json
+        # Show content
+        echo "File content:"
+        cat resp.json
         echo ""
-
-    - name: Process images with architecture validation
-      run: |
-        echo "=== Starting image processing ==="
         
-        # Use updated config
-        config_file="images_updated.json"
-        
-        # Check if specific image is requested
-        specific_image="${{ github.event.inputs.image_name }}"
-        if [ -n "$specific_image" ]; then
-          echo "Filtering for specific image: $specific_image"
-          jq --arg target "$specific_image" 'map(select(.target == $target))' "$config_file" > temp_config.json
-          if [ "$(jq 'length' temp_config.json)" -gt 0 ]; then
-            config_file="temp_config.json"
-            echo "Filtered config:"
-            cat temp_config.json
-          else
-            echo "No matching image found for $specific_image"
-            exit 0
-          fi
+        # Validate JSON
+        if ! jq empty resp.json; then
+          echo "❌ Invalid JSON format"
+          exit 1
         fi
         
-        # Read the JSON file
-        count=$(jq 'length' "$config_file")
+        # Check if it's an array
+        if ! jq -e 'type == "array"' resp.json > /dev/null; then
+          echo "❌ JSON must be an array"
+          exit 1
+        fi
+        
+        # Process each item
+        count=$(jq 'length' resp.json)
         echo "Found $count images to process"
+        echo "[" > images_processed.json
+        
+        for i in $(seq 0 $((count-1))); do
+          echo "Processing item $i..."
+          
+          # Get target
+          target=$(jq -r ".[$i].target // empty" resp.json)
+          if [ -z "$target" ]; then
+            echo "⚠️  Skipping item $i - no target"
+            continue
+          fi
+          
+          # Get source (default to target)
+          source=$(jq -r ".[$i].source // \"$target\"" resp.json)
+          
+          # Get architectures (default to amd64,arm64)
+          if jq -e ".[$i].architectures | type == \"array\"" resp.json > /dev/null; then
+            archs=$(jq -c ".[$i].architectures" resp.json)
+          else
+            archs='["amd64","arm64"]'
+          fi
+          
+          # Get tags (must exist)
+          if jq -e ".[$i].tags | type == \"array\"" resp.json > /dev/null; then
+            tags=$(jq -c ".[$i].tags" resp.json)
+          else
+            echo "⚠️  Skipping $target - no valid tags"
+            continue
+          fi
+          
+          # Add to processed file
+          if [ $i -gt 0 ]; then
+            echo "," >> images_processed.json
+          fi
+          
+          jq -n --arg source "$source" --arg target "$target" --argjson tags "$tags" --argjson archs "$archs" '{
+            source: $source,
+            target: $target,
+            tags: $tags,
+            architectures: $archs
+          }' >> images_processed.json
+        done
+        
+        echo "]" >> images_processed.json
+        echo "=== Processed config ==="
+        cat images_processed.json
+
+    - name: Sync images
+      run: |
+        echo "=== Starting sync process ==="
+        
+        if [ ! -f "images_processed.json" ]; then
+          echo "❌ Processed config not found"
+          exit 1
+        fi
+        
+        count=$(jq 'length' images_processed.json)
+        echo "Processing $count images"
         
         if [ "$count" -eq 0 ]; then
           echo "No images to process"
           exit 0
         fi
         
-        # Process images
-        success_count=0
+        success_total=0
+        
         for i in $(seq 0 $((count-1))); do
-          echo "=== Processing image $((i+1))/$count ==="
+          source=$(jq -r ".[$i].source" images_processed.json)
+          target=$(jq -r ".[$i].target" images_processed.json)
+          tags_json=$(jq -c ".[$i].tags" images_processed.json)
+          archs_json=$(jq -c ".[$i].architectures" images_processed.json)
           
-          # Extract values
-          source_base=$(jq -r ".[$i].source_base" "$config_file")
-          target=$(jq -r ".[$i].target" "$config_file")
-          tag_count=$(jq ".[$i].tags | length" "$config_file")
-          arch_count=$(jq ".[$i].architectures | length" "$config_file")
+          tag_count=$(echo "$tags_json" | jq 'length')
+          arch_count=$(echo "$archs_json" | jq 'length')
           
-          echo "Source base: $source_base"
-          echo "Target: $target"
-          echo "Tag count: $tag_count"
-          echo "Architecture count: $arch_count"
-          
-          if [ "$target" = "null" ] || [ "$tag_count" -eq 0 ] || [ "$arch_count" -eq 0 ]; then
-            echo "❌ No data for index $i"
-            continue
-          fi
-          
-          # Get architectures array
-          architectures_json=$(jq -c ".[$i].architectures" "$config_file")
-          echo "Architectures: $(echo "$architectures_json" | jq -r '.[]')"
+          echo "=== Processing $source → $target ($tag_count tags, $arch_count architectures) ==="
           
           # Process each tag
           for j in $(seq 0 $((tag_count-1))); do
-            tag=$(jq -r ".[$i].tags[$j]" "$config_file")
-            if [ "$tag" = "null" ] || [ -z "$tag" ]; then
-              echo "❌ Invalid tag at index $j"
-              continue
-            fi
-            
-            source="${source_base}:${tag}"
-            echo "🏷️  Processing tag: $tag ($source)"
+            tag=$(echo "$tags_json" | jq -r ".[$j]")
+            image_ref="${source}:${tag}"
+            echo "🏷️  Tag: $tag"
             
             # Process each architecture
             for k in $(seq 0 $((arch_count-1))); do
-              arch=$(echo "$architectures_json" | jq -r ".[$k]")
-              if [ "$arch" = "null" ] || [ -z "$arch" ]; then
-                echo "❌ Invalid architecture at index $k"
-                continue
-              fi
+              arch=$(echo "$archs_json" | jq -r ".[$k]")
+              echo "🖥️  Architecture: $arch"
               
-              echo "🖥️  Processing architecture: $arch"
-              
-              # Map short architecture names to full platform names
+              # Map arch to platform
               case "$arch" in
-                "amd64")
-                  platform="linux/amd64"
-                  arch_suffix="amd64"
-                  ;;
-                "arm64")
-                  platform="linux/arm64"
-                  arch_suffix="arm64"
-                  ;;
-                "arm")
-                  platform="linux/arm/v7"
-                  arch_suffix="arm"
-                  ;;
-                "arm/v7")
-                  platform="linux/arm/v7"
-                  arch_suffix="arm"
-                  ;;
-                "arm/v6")
-                  platform="linux/arm/v6"
-                  arch_suffix="arm-v6"
-                  ;;
-                "ppc64le")
-                  platform="linux/ppc64le"
-                  arch_suffix="ppc64le"
-                  ;;
-                "s390x")
-                  platform="linux/s390x"
-                  arch_suffix="s390x"
-                  ;;
-                *)
-                  platform="linux/$arch"
-                  arch_suffix="$arch"
-                  ;;
+                "amd64") platform="linux/amd64"; suffix="amd64" ;;
+                "arm64") platform="linux/arm64"; suffix="arm64" ;;
+                "arm") platform="linux/arm/v7"; suffix="arm" ;;
+                *) platform="linux/$arch"; suffix="$arch" ;;
               esac
               
-              # Check if the specific architecture exists for this image:tag on Docker Hub
-              echo "🔍 Checking if $arch architecture exists for $source..."
-              
-              # Get manifest list to check available architectures
-              arch_exists=false
-              echo "Fetching manifest info for $source..."
-              
-              # Try to get manifest info using docker manifest inspect
-              if manifest_info=$(docker manifest inspect "$source" 2>/dev/null); then
-                echo "✅ Successfully fetched manifest info"
-                # Check if the specific platform exists in the manifest
-                if echo "$manifest_info" | jq -e --arg platform "$platform" '.[] | select(.platform.os == "linux" and .platform.architecture == ($platform | split("/")[1]))' > /dev/null 2>&1; then
-                  arch_exists=true
-                  echo "✅ Architecture $arch found in manifest"
-                elif echo "$manifest_info" | jq -e --arg arch "$arch" '.[] | select(.platform.architecture == $arch)' > /dev/null 2>&1; then
-                  arch_exists=true
-                  echo "✅ Architecture $arch found in manifest (alternative check)"
-                else
-                  echo "⚠️  Architecture $arch NOT found in manifest, checking with platform $platform"
-                  # Try pulling with specific platform to verify
-                  if docker pull --platform "$platform" --quiet "$source" 2>/dev/null; then
-                    arch_exists=true
-                    echo "✅ Architecture $arch verified by successful pull"
-                    # Remove the pulled image to save space
-                    docker rmi "$source" || true
-                  else
-                    echo "❌ Architecture $arch NOT available for $source"
+              # Check if arch exists (simple check)
+              echo "🔍 Checking $arch availability..."
+              if timeout 30s docker pull --platform "$platform" --quiet "$image_ref" 2>/dev/null; then
+                echo "✅ $arch available"
+                docker rmi "$image_ref" || true
+                
+                # Actually pull and push
+                final_name="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${suffix}:${tag}"
+                echo "📥 Pulling $image_ref ($arch)..."
+                if docker pull --platform "$platform" "$image_ref"; then
+                  echo "📦 Tagging as $final_name"
+                  if docker tag "$image_ref" "$final_name"; then
+                    echo "📤 Pushing to registry..."
+                    if docker push "$final_name"; then
+                      echo "✅ Pushed successfully"
+                      success_total=$((success_total + 1))
+                    fi
+                    docker rmi "$final_name" || true
                   fi
+                  docker rmi "$image_ref" || true
                 fi
               else
-                echo "⚠️  Could not fetch manifest info, trying direct pull..."
-                # Fallback: try direct pull to verify architecture existence
-                if docker pull --platform "$platform" --quiet "$source" 2>/dev/null; then
-                  arch_exists=true
-                  echo "✅ Architecture $arch verified by successful pull"
-                  # Remove the pulled image to save space
-                  docker rmi "$source" || true
-                else
-                  echo "❌ Architecture $arch NOT available for $source"
-                fi
-              fi
-              
-              # Skip this architecture if it doesn't exist
-              if [ "$arch_exists" = false ]; then
-                echo "⏭️  Skipping $arch for $source - not available"
-                continue
-              fi
-              
-              # Process this architecture since it exists
-              echo "📥 Architecture $arch is available, proceeding with download..."
-              arch_success=false
-              arch_target="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${arch_suffix}:$tag"
-              echo "📥 Pulling $source for $platform..."
-              if docker pull --platform "$platform" "$source"; then
-                echo "✅ $arch pull successful"
-                echo "📦 Tagging as $arch_target"
-                if docker tag "$source" "$arch_target"; then
-                  echo "✅ Tag successful"
-                  echo "📤 Pushing to registry..."
-                  if docker push "$arch_target"; then
-                    echo "✅ $arch version pushed successfully: $arch_target"
-                    arch_success=true
-                  else
-                    echo "❌ Failed to push $arch version"
-                  fi
-                  docker rmi "$source" || true
-                else
-                  echo "❌ Failed to tag $arch version"
-                  docker rmi "$source" || true
-                fi
-                docker rmi "$arch_target" || true
-              else
-                echo "❌ Failed to pull $arch version of $source"
-              fi
-              
-              # Count success
-              if [ "$arch_success" = true ]; then
-                success_count=$((success_count + 1))
+                echo "⏭️  $arch not available, skipping"
               fi
             done
           done
         done
         
-        echo "=== Processing Summary ==="
-        echo "Total successful uploads: $success_count"
+        echo "=== Summary ==="
+        echo "Successfully processed: $success_total images"
 
-    - name: Summary
+    - name: Cleanup
       if: always()
       run: |
-        echo "🏁 Sync process completed"
-        echo "Repository: ${{ github.repository }}"
-        echo "Run ID: ${{ github.run_id }}"
-        echo "Registry: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}"
-        echo "=== Recent Docker images in registry ==="
-        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" | head -20 || echo "No images found"
+        echo "🧹 Cleaning up..."
+        docker system prune -f || true
