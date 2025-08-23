@@ -1,52 +1,167 @@
-name: Mirror Images to Aliyun
+name: Sync Multi-Arch Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync all images (ignore cache)'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 2 * * *'
 
 jobs:
-  mirror:
+  sync-images:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4.1.6
+    - name: Checkout
+      uses: actions/checkout@v3
 
-      - name: Install yq
-        run: |
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Enable Docker experimental
-        run: |
-          echo '{"experimental":true}' | sudo tee /etc/docker/daemon.json
-          sudo service docker restart
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pull and push images
-        env:
-          ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
-          ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
-          ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
-          ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
-        run: |
-          docker login --username=$ALIYUN_USERNAME --password=$ALIYUN_PASSWORD $ALIYUN_REGISTRY
+    - name: Login to Alibaba Cloud Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: registry.cn-hangzhou.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
 
-          IMAGE_COUNT=$(yq e '.images | length' configs/ImagesConfig.yaml)
-          for i in $(seq 0 $(($IMAGE_COUNT-1))); do
-            REPO=$(yq e ".images[$i].repo" configs/ImagesConfig.yaml)
-            TAG=$(yq e ".images[$i].tag" configs/ImagesConfig.yaml)
-            SOURCE_IMAGE="$REPO:$TAG"
-            TARGET_IMAGE="$ALIYUN_REGISTRY/$ALIYUN_NAMESPACE/$REPO:$TAG"
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
 
-            # Pull AMD64
-            docker pull --platform=linux/amd64 $SOURCE_IMAGE
-            docker tag $SOURCE_IMAGE $TARGET_IMAGE-amd64
-            docker push $TARGET_IMAGE-amd64
+    - name: Read image list
+      id: read_images
+      run: |
+        if [ -f "images.json" ]; then
+          echo "images_config=$(cat images.json | jq -c .)" >> $GITHUB_OUTPUT
+          echo "Found $(cat images.json | jq length) images to sync"
+        else
+          echo "❌ images.json not found"
+          exit 1
+        fi
 
-            # Pull ARM64
-            docker pull --platform=linux/arm64 $SOURCE_IMAGE
-            docker tag $SOURCE_IMAGE $TARGET_IMAGE-arm64
-            docker push $TARGET_IMAGE-arm64
-
-            # Create and push manifest
-            docker manifest create $TARGET_IMAGE --amend $TARGET_IMAGE-amd64 --amend $TARGET_IMAGE-arm64
-            docker manifest push $TARGET_IMAGE
+    - name: Sync images for both architectures
+      run: |
+        # Convert JSON to bash array
+        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
+        
+        for ((i=0; i<images_count; i++)); do
+          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
+          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
+          
+          echo "🔄 Processing image: $source_image"
+          
+          # Pull images for both architectures
+          echo "📥 Pulling amd64 version..."
+          docker pull --platform linux/amd64 $source_image
+          
+          echo "📥 Pulling arm64 version..."
+          docker pull --platform linux/arm64 $source_image
+          
+          # Create manifest list for multi-arch support
+          echo "📦 Creating manifest list..."
+          docker manifest create $source_image \
+            --amend $source_image --platform linux/amd64 \
+            --amend $source_image --platform linux/arm64
+          
+          # Tag and push for each target tag
+          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          for ((j=0; j<tags_count; j++)); do
+            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
+            
+            # Tag for Alibaba Cloud registry
+            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
+            echo "🏷️  Tagging image as $target_full_name"
+            docker tag $source_image $target_full_name
+            
+            # Push single-arch images
+            echo "📤 Pushing amd64 version..."
+            docker push $target_full_name --platform linux/amd64
+            
+            echo "📤 Pushing arm64 version..."
+            docker push $target_full_name --platform linux/arm64
+            
+            # Create and push manifest for multi-arch support
+            echo "🔄 Creating multi-arch manifest for $target_full_name"
+            docker manifest create $target_full_name \
+              --amend $target_full_name --platform linux/amd64 \
+              --amend $target_full_name --platform linux/arm64
+              
+            echo "📤 Pushing multi-arch manifest..."
+            docker manifest push $target_full_name
           done
+          
+          echo "✅ Completed processing $source_image"
+        done
+
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up Docker images..."
+        
+        # Remove source images
+        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
+        for ((i=0; i<images_count; i++)); do
+          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
+          docker rmi $source_image || true
+          
+          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
+          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          for ((j=0; j<tags_count; j++)); do
+            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
+            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
+            docker rmi $target_full_name || true
+          done
+        done
+        
+        echo "✅ Cleanup completed"
+
+    - name: Send notification on success
+      if: success()
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        payload: |
+          {
+            "text": "✅ Multi-arch Docker images sync completed successfully",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "✅ *Multi-arch Docker images sync completed successfully*\n- Repository: ${{ github.repository }}\n- Architecture: amd64 & arm64\n- Destination: Alibaba Cloud ACR"
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Send notification on failure
+      if: failure()
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        payload: |
+          {
+            "text": "❌ Multi-arch Docker images sync failed",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "❌ *Multi-arch Docker images sync failed*\n- Repository: ${{ github.repository }}\n- Check the workflow logs for details"
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
