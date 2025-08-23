@@ -28,24 +28,6 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq
 
-    - name: Debug images.json
-      run: |
-        echo "=== Check if images.json exists ==="
-        ls -la
-        echo ""
-        
-        echo "=== images.json content ==="
-        cat images.json
-        echo ""
-        
-        echo "=== Validate JSON ==="
-        jq '.' images.json
-        echo ""
-        
-        echo "=== JSON type and length ==="
-        echo "Type: $(jq 'type' images.json)"
-        echo "Length: $(jq 'length' images.json)"
-
     - name: Process images
       run: |
         echo "=== Starting image processing ==="
@@ -92,7 +74,7 @@ jobs:
             docker push "$full_target" --platform linux/amd64
             
             echo "📤 Pushing arm64 version..."
-            docker push "$full_target" --platform linux/arm64"
+            docker push "$full_target" --platform linux/arm64
           done
         done
 
@@ -100,4 +82,4 @@ jobs:
       if: always()
       run: |
         echo "🧹 Cleaning up..."
-        # Add cleanup if needed
+        # Add cleanup commands here if needed
