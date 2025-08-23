@@ -2,6 +2,11 @@ name: Sync Multi-Arch Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync all images (ignore cache)'
+        type: boolean
+        default: false
   schedule:
     - cron: '0 2 * * *'
 
@@ -16,12 +21,6 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-
     - name: Login to Alibaba Cloud Container Registry
       uses: docker/login-action@v2
       with:
@@ -34,19 +33,28 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq
 
-    - name: Sync images for both architectures
+    - name: Read image list
+      id: read_images
       run: |
-        # Check if images.json exists
-        if [ ! -f "images.json" ]; then
+        if [ -f "images.json" ]; then
+          echo "images_config=$(cat images.json | jq -c .)" >> $GITHUB_OUTPUT
+          echo "Found $(cat images.json | jq length) images to sync"
+        else
           echo "❌ images.json not found"
           exit 1
         fi
+
+    - name: Sync images for both architectures
+      run: |
+        # Convert JSON to bash array
+        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
         
-        # Get all source images from JSON
-        source_images=$(jq -r 'keys[]' images.json)
+        echo "📦 Total images to sync: $images_count"
         
-        for source_image in $source_images; do
-          target_image=$(jq -r ".[\"$source_image\"].target" images.json)
+        for ((i=0; i<images_count; i++)); do
+          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
+          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
+          
           echo "🔄 Processing image: $source_image -> $target_image"
           
           # Pull images for both architectures
@@ -56,27 +64,60 @@ jobs:
           echo "📥 Pulling arm64 version..."
           docker pull --platform linux/arm64 $source_image
           
-          # Get tags array
-          tags=$(jq -r ".[\"$source_image\"].tags[]" images.json)
+          # Tag and push for each target tag
+          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          echo "🏷️  Number of tags to process: $tags_count"
           
-          # Tag and push for each tag
-          for tag in $tags; do
-            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
-            echo "🏷️  Tagging and pushing $target_full_name"
+          for ((j=0; j<tags_count; j++)); do
+            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
             
+            # Tag for Alibaba Cloud registry
+            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
+            echo "🏷️  Tagging image as $target_full_name"
             docker tag $source_image $target_full_name
             
             # Push both architectures
-            echo "📤 Pushing multi-arch image..."
-            docker push $target_full_name
+            echo "📤 Pushing amd64 version..."
+            docker push $target_full_name --platform linux/amd64
+            
+            echo "📤 Pushing arm64 version..."
+            docker push $target_full_name --platform linux/arm64
+            
+            echo "✅ Tag $tag pushed successfully"
           done
           
           echo "✅ Completed processing $source_image"
+          echo "----------------------------------------"
         done
 
     - name: Cleanup
       if: always()
       run: |
         echo "🧹 Cleaning up Docker images..."
-        # Add cleanup commands here if needed
+        
+        # Remove source images
+        images_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq 'length')
+        for ((i=0; i<images_count; i++)); do
+          source_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].source")
+          echo "🗑️  Removing $source_image"
+          docker rmi $source_image || true
+          
+          target_image=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].target")
+          tags_count=$(echo '${{ steps.read_images.outputs.images_config }}' | jq ".[$i].tags | length")
+          
+          for ((j=0; j<tags_count; j++)); do
+            tag=$(echo '${{ steps.read_images.outputs.images_config }}' | jq -r ".[$i].tags[$j]")
+            target_full_name="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/$target_image:$tag"
+            echo "🗑️  Removing $target_full_name"
+            docker rmi $target_full_name || true
+          done
+        done
+        
         echo "✅ Cleanup completed"
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Sync process completed"
+        echo "Repository: ${{ github.repository }}"
+        echo "Run ID: ${{ github.run_id }}"
