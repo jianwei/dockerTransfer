@@ -1,0 +1,121 @@
+name: Sync Multi-Arch Docker Images to Alibaba Cloud2
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-images:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Login to Alibaba Cloud Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: registry.cn-hangzhou.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Process images
+      run: |
+        echo "=== Starting image processing ==="
+        
+        # Read the JSON file directly in the shell
+        count=$(jq 'length' images.json)
+        echo "Found $count images to process"
+        
+        # Simple loop with proper error handling
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1)) ==="
+          
+          # Extract values one by one with error checking
+          source=$(jq -r ".[$i].source" images.json)
+          target=$(jq -r ".[$i].target" images.json)
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          
+          echo "Source: $source"
+          echo "Target: $target"
+          echo "Tag count: $tag_count"
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # Process tags - create separate images for each architecture
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images.json)
+            echo "🏷️  Processing tag: $tag"
+            
+            # Create amd64 version
+            amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
+            echo "📥 Pulling $source for amd64..."
+            if docker pull --platform linux/amd64 "$source"; then
+              echo "✅ amd64 pull successful"
+              echo "📦 Tagging as $amd64_target"
+              if docker tag "$source" "$amd64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$amd64_target"; then
+                  echo "✅ amd64 version pushed successfully: $amd64_target"
+                else
+                  echo "❌ Failed to push amd64 version"
+                fi
+              else
+                echo "❌ Failed to tag amd64 version"
+              fi
+              # Clean up
+              docker rmi "$source" || true
+            else
+              echo "❌ Failed to pull amd64 version"
+            fi
+            
+            # Create arm64 version
+            arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
+            echo "📥 Pulling $source for arm64..."
+            if docker pull --platform linux/arm64 "$source"; then
+              echo "✅ arm64 pull successful"
+              echo "📦 Tagging as $arm64_target"
+              if docker tag "$source" "$arm64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$arm64_target"; then
+                  echo "✅ arm64 version pushed successfully: $arm64_target"
+                else
+                  echo "❌ Failed to push arm64 version"
+                fi
+              else
+                echo "❌ Failed to tag arm64 version"
+              fi
+              # Clean up
+              docker rmi "$source" || true
+            else
+              echo "❌ Failed to pull arm64 version"
+            fi
+            
+            # Clean up tagged images
+            docker rmi "$amd64_target" || true
+            docker rmi "$arm64_target" || true
+          done
+        done
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Processing completed"
+        echo "=== Final Docker images ==="
+        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
