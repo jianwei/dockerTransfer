@@ -23,5 +23,12 @@
             "3.16",
             "latest"
         ]
+    },
+    {
+        "source": "vllm/vllm-openai:latest",
+        "target": "latest",
+        "tags": [
+            "latest"
+        ]
     }
 ]
