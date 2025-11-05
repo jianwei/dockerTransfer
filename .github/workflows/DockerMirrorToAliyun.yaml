@@ -126,15 +126,43 @@ jobs:
           if echo "$source" | grep -qiE "(vllm|pytorch|tensorflow|large|big)"; then
             echo "⚠️  Detected large image (~11GB+), performing aggressive cleanup..."
             force_cleanup
-            # 对于大镜像，需要确保磁盘使用率低于 50%
+            # 对于大镜像，检查可用空间（而不是使用率）
+            available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
             usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-            while [ "$usage_percent" -gt 50 ]; do
-              echo "⚠️  Disk usage ${usage_percent}% still too high for large image, cleaning again..."
-              force_cleanup
-              usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-              sleep 2
-            done
-            echo "✅ Disk usage is ${usage_percent}%, safe to proceed with large image"
+            echo "📊 Disk usage: ${usage_percent}%, Available: ${available_gb}GB"
+            
+            # 如果可用空间足够（>=15GB）或者使用率已经合理（<75%），则继续
+            if [ "$available_gb" -ge 15 ] || [ "$usage_percent" -lt 75 ]; then
+              echo "✅ Sufficient space available (${available_gb}GB free), proceeding with large image"
+            else
+              # 尝试最多清理 3 次
+              max_cleanup_attempts=3
+              cleanup_attempt=0
+              previous_usage=$usage_percent
+              
+              while [ "$cleanup_attempt" -lt "$max_cleanup_attempts" ] && [ "$usage_percent" -gt 75 ] && [ "$available_gb" -lt 15 ]; do
+                cleanup_attempt=$((cleanup_attempt + 1))
+                echo "⚠️  Attempt $cleanup_attempt/$max_cleanup_attempts: Disk usage ${usage_percent}% still high, cleaning again..."
+                force_cleanup
+                
+                # 检查清理后的状态
+                new_usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+                new_available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+                
+                # 如果清理后没有改善，停止清理
+                if [ "$new_usage_percent" -ge "$previous_usage" ] && [ "$new_available_gb" -le "$available_gb" ]; then
+                  echo "⚠️  No improvement after cleanup, stopping cleanup attempts"
+                  break
+                fi
+                
+                usage_percent=$new_usage_percent
+                available_gb=$new_available_gb
+                previous_usage=$usage_percent
+                sleep 2
+              done
+              
+              echo "📊 Final disk status: ${usage_percent}% used, ${available_gb}GB available"
+            fi
           else
             # 在处理每个镜像之前检查并清理
             check_and_cleanup_if_needed
