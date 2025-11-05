@@ -39,13 +39,46 @@ jobs:
       run: |
         echo "=== Starting image processing ==="
         
+        # 定义清理函数，用于彻底清理 Docker 系统
+        cleanup_docker() {
+          echo "🧹 Performing aggressive Docker cleanup..."
+          # 移除所有未使用的容器
+          docker container prune -af || true
+          # 移除所有未使用的镜像（包括 dangling）
+          docker image prune -af || true
+          # 移除所有未使用的卷
+          docker volume prune -af || true
+          # 移除所有未使用的网络
+          docker network prune -af || true
+          # 清理构建缓存
+          docker builder prune -af || true
+          # 系统级清理
+          docker system prune -af --volumes || true
+          echo "💾 Disk space after cleanup:"
+          df -h
+        }
+        
+        # 检查磁盘空间函数，如果可用空间小于阈值则清理
+        check_and_cleanup_if_needed() {
+          # 获取根分区可用空间百分比（去掉百分号）
+          available_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+          # 如果使用率超过 80%，执行清理
+          if [ "$available_percent" -gt 80 ]; then
+            echo "⚠️  Disk usage is ${available_percent}%, performing cleanup..."
+            cleanup_docker
+          fi
+        }
+        
         # Read the JSON file directly in the shell
         count=$(jq 'length' images.json)
         echo "Found $count images to process"
         
         # Simple loop with proper error handling
         for i in $(seq 0 $((count-1))); do
-          echo "=== Processing image $((i+1)) ==="
+          echo "=== Processing image $((i+1))/$count ==="
+          
+          # 在处理每个镜像之前检查并清理
+          check_and_cleanup_if_needed
           
           # Extract values one by one with error checking
           source=$(jq -r ".[$i].source" images.json)
@@ -103,20 +136,23 @@ jobs:
               
               final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${suffix}:${tag}"
               echo "🖥️  Processing architecture: $arch ($platform)"
+              
+              # 在拉取前检查磁盘空间
+              check_and_cleanup_if_needed
+              
               echo "📥 Pulling $image_ref for $arch..."
               
               # Try to pull with retry logic
               pull_success=false
-              for retry in 1 2; do
+              for retry in 1 2 3; do
                 if docker pull --platform "$platform" "$image_ref"; then
                   pull_success=true
                   break
                 else
-                  if [ $retry -eq 1 ]; then
-                    echo "⚠️  Pull failed, cleaning Docker system and retrying..."
-                    docker system prune -af || true
-                    echo "💾 Disk space after cleanup:"
-                    df -h
+                  if [ $retry -lt 3 ]; then
+                    echo "⚠️  Pull failed (attempt $retry), performing aggressive cleanup and retrying..."
+                    cleanup_docker
+                    sleep 2
                   fi
                 fi
               done
@@ -132,26 +168,30 @@ jobs:
                   else
                     echo "❌ Failed to push $arch version"
                   fi
+                  # 立即删除目标镜像标签
                   docker rmi "$final_target" || true
                 else
                   echo "❌ Failed to tag $arch version"
                 fi
+                # 立即删除源镜像
                 docker rmi "$image_ref" || true
               else
-                echo "⏭️  $arch not available, skipping"
+                echo "⏭️  $arch not available after 3 attempts, skipping"
               fi
+              
+              # 每个架构处理完后立即清理
+              echo "🧹 Cleaning up after architecture processing..."
+              docker image prune -f || true
             done
             
             # Clean up after each tag to save space
             echo "🧹 Cleaning up after tag processing..."
-            docker system prune -f || true
+            cleanup_docker
           done
           
           # Clean up after each image to save space
           echo "🧹 Cleaning up after image processing..."
-          docker system prune -f || true
-          echo "💾 Current disk space:"
-          df -h
+          cleanup_docker
         done
 
     - name: Summary
