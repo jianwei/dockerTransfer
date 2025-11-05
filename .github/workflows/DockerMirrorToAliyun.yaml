@@ -42,17 +42,17 @@ jobs:
         # 定义清理函数，用于彻底清理 Docker 系统
         cleanup_docker() {
           echo "🧹 Performing aggressive Docker cleanup..."
-          # 移除所有未使用的容器
-          docker container prune -af || true
+          # 移除所有停止的容器（不使用 -a，因为 -a 不是有效参数）
+          docker container prune -f || true
           # 移除所有未使用的镜像（包括 dangling）
           docker image prune -af || true
-          # 移除所有未使用的卷
-          docker volume prune -af || true
-          # 移除所有未使用的网络
-          docker network prune -af || true
+          # 移除所有未使用的卷（不使用 -a，因为 -a 不是有效参数）
+          docker volume prune -f || true
+          # 移除所有未使用的网络（不使用 -a，因为 -a 不是有效参数）
+          docker network prune -f || true
           # 清理构建缓存
           docker builder prune -af || true
-          # 系统级清理
+          # 系统级清理，移除所有未使用的资源
           docker system prune -af --volumes || true
           echo "💾 Disk space after cleanup:"
           df -h
@@ -60,13 +60,49 @@ jobs:
         
         # 检查磁盘空间函数，如果可用空间小于阈值则清理
         check_and_cleanup_if_needed() {
-          # 获取根分区可用空间百分比（去掉百分号）
-          available_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-          # 如果使用率超过 80%，执行清理
-          if [ "$available_percent" -gt 80 ]; then
-            echo "⚠️  Disk usage is ${available_percent}%, performing cleanup..."
+          # 获取根分区使用率百分比（去掉百分号）
+          usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+          # 如果使用率超过 65%，执行强制清理（降低阈值以提前清理）
+          if [ "$usage_percent" -gt 65 ]; then
+            echo "⚠️  Disk usage is ${usage_percent}%, performing force cleanup..."
+            force_cleanup
+          elif [ "$usage_percent" -gt 60 ]; then
+            echo "⚠️  Disk usage is ${usage_percent}%, performing cleanup..."
             cleanup_docker
           fi
+        }
+        
+        # 强制清理函数，在处理大镜像前使用
+        force_cleanup() {
+          echo "🧹 Force cleaning Docker system before large image..."
+          # 停止所有运行中的容器（兼容性处理）
+          running_containers=$(docker ps -q)
+          if [ -n "$running_containers" ]; then
+            echo "$running_containers" | xargs docker stop || true
+          fi
+          # 删除所有容器（包括运行中的）
+          container_ids=$(docker ps -aq)
+          if [ -n "$container_ids" ]; then
+            echo "$container_ids" | xargs docker rm -f || true
+          fi
+          # 删除所有镜像（包括正在使用的）
+          image_ids=$(docker images -q)
+          if [ -n "$image_ids" ]; then
+            echo "$image_ids" | xargs docker rmi -f || true
+          fi
+          # 清理所有卷
+          docker volume prune -f || true
+          # 清理网络
+          docker network prune -f || true
+          # 清理构建缓存
+          docker builder prune -af || true
+          # 系统级彻底清理
+          docker system prune -af --volumes || true
+          # 显示 Docker 磁盘使用情况
+          echo "🧹 Docker disk usage:"
+          docker system df -v || true
+          echo "💾 Disk space after force cleanup:"
+          df -h
         }
         
         # Read the JSON file directly in the shell
@@ -77,12 +113,24 @@ jobs:
         for i in $(seq 0 $((count-1))); do
           echo "=== Processing image $((i+1))/$count ==="
           
-          # 在处理每个镜像之前检查并清理
-          check_and_cleanup_if_needed
-          
           # Extract values one by one with error checking
           source=$(jq -r ".[$i].source" images.json)
           target=$(jq -r ".[$i].target" images.json)
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # 检查是否为大镜像（如 vllm, pytorch 等），如果是则强制清理
+          if echo "$source" | grep -qiE "(vllm|pytorch|tensorflow|large|big)"; then
+            echo "⚠️  Detected large image, performing force cleanup..."
+            force_cleanup
+          else
+            # 在处理每个镜像之前检查并清理
+            check_and_cleanup_if_needed
+          fi
+          
           tag_count=$(jq ".[$i].tags | length" images.json)
           
           # Get architectures (default to amd64,arm64)
@@ -96,11 +144,6 @@ jobs:
           echo "Target: $target"
           echo "Tag count: $tag_count"
           echo "Architecture count: $arch_count"
-          
-          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
-            echo "❌ Invalid data at index $i"
-            continue
-          fi
           
           # Extract base image name from source (remove tag)
           base_image=$(echo "$source" | cut -d: -f1)
@@ -137,8 +180,16 @@ jobs:
               final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${suffix}:${tag}"
               echo "🖥️  Processing architecture: $arch ($platform)"
               
-              # 在拉取前检查磁盘空间
-              check_and_cleanup_if_needed
+              # 在拉取前检查磁盘空间，如果使用率超过 60% 则强制清理
+              usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "📊 Current disk usage: ${usage_percent}%"
+              if [ "$usage_percent" -gt 60 ]; then
+                echo "⚠️  Disk usage is ${usage_percent}%, performing force cleanup before pull..."
+                force_cleanup
+                # 再次检查磁盘空间
+                usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+                echo "📊 Disk usage after cleanup: ${usage_percent}%"
+              fi
               
               echo "📥 Pulling $image_ref for $arch..."
               
@@ -150,9 +201,9 @@ jobs:
                   break
                 else
                   if [ $retry -lt 3 ]; then
-                    echo "⚠️  Pull failed (attempt $retry), performing aggressive cleanup and retrying..."
-                    cleanup_docker
-                    sleep 2
+                    echo "⚠️  Pull failed (attempt $retry), performing force cleanup and retrying..."
+                    force_cleanup
+                    sleep 3
                   fi
                 fi
               done
