@@ -28,6 +28,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq
 
+    - name: Clean Docker system before processing
+      run: |
+        echo "🧹 Cleaning Docker system before processing..."
+        docker system prune -af --volumes || true
+        echo "💾 Disk space before processing:"
+        df -h
+
     - name: Process images
       run: |
         echo "=== Starting image processing ==="
@@ -98,7 +105,23 @@ jobs:
               echo "🖥️  Processing architecture: $arch ($platform)"
               echo "📥 Pulling $image_ref for $arch..."
               
-              if docker pull --platform "$platform" "$image_ref"; then
+              # Try to pull with retry logic
+              pull_success=false
+              for retry in 1 2; do
+                if docker pull --platform "$platform" "$image_ref"; then
+                  pull_success=true
+                  break
+                else
+                  if [ $retry -eq 1 ]; then
+                    echo "⚠️  Pull failed, cleaning Docker system and retrying..."
+                    docker system prune -af || true
+                    echo "💾 Disk space after cleanup:"
+                    df -h
+                  fi
+                fi
+              done
+              
+              if [ "$pull_success" = true ]; then
                 echo "✅ $arch pull successful"
                 echo "📦 Tagging as $final_target"
                 if docker tag "$image_ref" "$final_target"; then
@@ -118,7 +141,17 @@ jobs:
                 echo "⏭️  $arch not available, skipping"
               fi
             done
+            
+            # Clean up after each tag to save space
+            echo "🧹 Cleaning up after tag processing..."
+            docker system prune -f || true
           done
+          
+          # Clean up after each image to save space
+          echo "🧹 Cleaning up after image processing..."
+          docker system prune -f || true
+          echo "💾 Current disk space:"
+          df -h
         done
 
     - name: Summary
