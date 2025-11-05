@@ -1,0 +1,195 @@
+name: Optimize and Push Docker Images to GitHub Container Registry
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'  # 每天凌晨3点执行
+
+env:
+  REGISTRY: ghcr.io
+  # 使用 ${{ github.repository_owner }} 自动获取仓库所有者作为命名空间
+
+jobs:
+  optimize-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq python3-pip
+        pip3 install docker-squash || echo "docker-squash安装失败，将使用其他优化方法"
+
+    - name: Make optimize script executable
+      run: chmod +x scripts/optimizeDockerImage.sh
+
+    - name: Clean Docker system before processing
+      run: |
+        echo "🧹 清理Docker系统..."
+        docker system prune -af --volumes || true
+        echo "💾 处理前磁盘空间:"
+        df -h
+
+    - name: Process and optimize images
+      run: |
+        set -euo pipefail
+        
+        # 定义清理函数
+        cleanup_docker() {
+          echo "🧹 执行Docker清理..."
+          docker system prune -af --volumes || true
+          echo "💾 清理后磁盘空间:"
+          df -h
+        }
+        
+        # 获取GitHub仓库命名空间
+        GITHUB_NAMESPACE="${{ github.repository_owner }}"
+        
+        # 读取images.json配置
+        count=$(jq 'length' images.json)
+        echo "找到 $count 个镜像需要处理"
+        
+        # 处理每个镜像
+        for i in $(seq 0 $((count-1))); do
+          echo "=== 处理镜像 $((i+1))/$count ==="
+          
+          source=$(jq -r ".[$i].source" images.json)
+          target=$(jq -r ".[$i].target" images.json)
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ 索引 $i 处的数据无效"
+            continue
+          fi
+          
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          arch_count=$(jq ".[$i].architectures | length" images.json)
+          
+          echo "源镜像: $source"
+          echo "目标镜像: $target"
+          echo "标签数量: $tag_count"
+          echo "架构数量: $arch_count"
+          
+          # 提取基础镜像名称
+          base_image=$(echo "$source" | cut -d: -f1)
+          
+          # 处理每个标签
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images.json)
+            echo "🏷️  处理标签: $tag"
+            
+            image_ref="${base_image}:${tag}"
+            
+            # 处理每个架构
+            for k in $(seq 0 $((arch_count-1))); do
+              arch=$(jq -r ".[$i].architectures[$k]" images.json)
+              
+              # 映射架构到平台
+              case "$arch" in
+                "amd64") platform="linux/amd64"; suffix="amd64" ;;
+                "arm64") platform="linux/arm64"; suffix="arm64" ;;
+                "arm/v7"|"arm") platform="linux/arm/v7"; suffix="armv7" ;;
+                *) platform="linux/$arch"; suffix="$arch" ;;
+              esac
+              
+              # 构建目标镜像地址
+              final_target="${{ env.REGISTRY }}/${GITHUB_NAMESPACE}/${target}-${suffix}:${tag}"
+              echo "🖥️  处理架构: $arch ($platform)"
+              
+              # 检查磁盘空间
+              usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+              echo "📊 当前磁盘使用率: ${usage_percent}%, 可用空间: ${available_gb}GB"
+              
+              # 如果磁盘使用率超过60%，执行清理
+              if [ "$usage_percent" -gt 60 ]; then
+                echo "⚠️  磁盘使用率过高，执行清理..."
+                cleanup_docker
+              fi
+              
+              # 拉取源镜像
+              echo "📥 拉取 $image_ref ($arch)..."
+              pull_success=false
+              for retry in 1 2 3; do
+                if docker pull --platform "$platform" "$image_ref"; then
+                  pull_success=true
+                  break
+                else
+                  if [ $retry -lt 3 ]; then
+                    echo "⚠️  拉取失败 (尝试 $retry)，清理后重试..."
+                    cleanup_docker
+                    sleep 3
+                  fi
+                fi
+              done
+              
+              if [ "$pull_success" = true ]; then
+                echo "✅ $arch 拉取成功"
+                
+                # 使用优化脚本优化镜像大小
+                echo "🔧 使用优化脚本优化镜像大小..."
+                if ./scripts/optimizeDockerImage.sh "$image_ref" "$final_target" --compress --platform "$platform"; then
+                  echo "✅ 镜像优化成功"
+                else
+                  echo "⚠️  优化失败，使用原始镜像"
+                  docker tag "$image_ref" "$final_target"
+                fi
+                
+                # 推送到GitHub Container Registry
+                echo "📤 推送到 $final_target..."
+                if docker push "$final_target"; then
+                  echo "✅ $arch 版本推送成功: $final_target"
+                else
+                  echo "❌ 推送 $arch 版本失败"
+                fi
+                
+                # 清理本地镜像
+                docker rmi "$final_target" || true
+                docker rmi "$image_ref" || true
+              else
+                echo "⏭️  $arch 在3次尝试后仍不可用，跳过"
+              fi
+              
+              # 每个架构处理完后清理
+              echo "🧹 架构处理完成后清理..."
+              docker image prune -f || true
+            done
+            
+            # 每个标签处理完后清理
+            echo "🧹 标签处理完成后清理..."
+            cleanup_docker
+          done
+          
+          # 每个镜像处理完后清理
+          echo "🧹 镜像处理完成后清理..."
+          cleanup_docker
+        done
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 处理完成"
+        echo "=== 最终Docker镜像 ==="
+        docker images | head -20 || echo "未找到镜像"
+        echo ""
+        echo "💾 最终磁盘使用情况:"
+        df -h
+        echo ""
+        echo "🐳 Docker系统使用情况:"
+        docker system df || true
+

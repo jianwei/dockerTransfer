@@ -208,9 +208,207 @@ Docker 镜像传输工具，支持在不同 Docker 仓库之间传输镜像，�
 
 ---
 
+## Docker镜像优化
+
+### 问题说明
+
+当使用 GitHub Container Registry (ghcr.io) 或其他容器仓库时，过大的镜像会导致以下问题：
+
+1. **存储空间限制**: GitHub Container Registry 对免费账户有存储限制
+2. **传输速度慢**: 大镜像上传和下载耗时较长
+3. **资源消耗**: 占用更多带宽和存储资源
+4. **成本增加**: 可能产生额外的存储和带宽费用
+
+### 优化方案
+
+本项目提供了多种镜像优化方案，帮助减小镜像体积：
+
+#### 1. 使用镜像优化脚本
+
+项目提供了 `scripts/optimizeDockerImage.sh` 脚本，支持多种优化方法：
+
+##### 安装依赖
+
+```bash
+# 安装docker-squash（可选，用于更好的压缩效果）
+pip3 install docker-squash
+```
+
+##### 基本使用
+
+```bash
+# 使用compress方法优化镜像（默认）
+./scripts/optimizeDockerImage.sh nginx:latest ghcr.io/username/nginx:latest --compress
+
+# 使用squash方法优化镜像
+./scripts/optimizeDockerImage.sh vllm/vllm-openai:latest ghcr.io/username/vllm:latest --squash
+
+# 同时使用多种优化方法
+./scripts/optimizeDockerImage.sh nginx:latest ghcr.io/username/nginx:latest --squash --compress
+
+# 分析镜像大小
+./scripts/optimizeDockerImage.sh nginx:latest --analyze
+```
+
+##### 脚本参数说明
+
+- `--compress`: 使用docker buildx的压缩选项，适合大多数场景
+- `--squash`: 使用docker-squash压缩镜像层，通常能获得更好的压缩效果
+- `--analyze`: 仅分析镜像大小，不进行优化
+- `--help`: 显示帮助信息
+
+##### 优化效果示例
+
+```
+==========================================
+优化结果
+==========================================
+原始大小: 1.2GB
+优化后大小: 850MB
+节省空间: 350MB (29%)
+==========================================
+```
+
+#### 2. 使用GitHub Actions自动优化
+
+项目提供了 `.github/workflows/optimizeAndPushToGitHub.yaml` 工作流，可以自动优化镜像并推送到GitHub Container Registry。
+
+##### 使用方法
+
+1. **配置GitHub Secrets**（如果需要推送到私有仓库）:
+   - 工作流会自动使用 `GITHUB_TOKEN`，无需额外配置
+
+2. **手动触发工作流**:
+   - 前往 GitHub Actions 页面
+   - 选择 "Optimize and Push Docker Images to GitHub Container Registry"
+   - 点击 "Run workflow"
+
+3. **定时执行**:
+   - 工作流默认每天凌晨3点自动执行
+   - 可以在 `.github/workflows/optimizeAndPushToGitHub.yaml` 中修改cron表达式
+
+##### 工作流特性
+
+- ✅ 自动优化镜像大小（使用docker-squash和docker buildx）
+- ✅ 支持多架构镜像（amd64, arm64等）
+- ✅ 支持多标签管理
+- ✅ 自动清理Docker系统资源
+- ✅ 显示优化前后的大小对比
+- ✅ 错误重试机制
+
+#### 3. 优化技巧和最佳实践
+
+##### 选择合适的优化方法
+
+1. **小镜像 (< 500MB)**: 
+   - 使用 `--compress` 即可，速度快
+
+2. **中等镜像 (500MB - 2GB)**: 
+   - 使用 `--squash` 或 `--squash --compress` 组合
+
+3. **大镜像 (> 2GB)**: 
+   - 优先使用 `--squash`，然后使用 `--compress`
+   - 考虑使用多阶段构建重新构建镜像
+
+##### 镜像构建优化建议
+
+在构建镜像时，可以通过以下方式减小镜像大小：
+
+1. **使用多阶段构建**: 只保留运行时需要的文件
+2. **使用Alpine基础镜像**: Alpine Linux镜像通常更小
+3. **合并RUN命令**: 减少镜像层数
+4. **清理不必要的文件**: 删除缓存、临时文件等
+5. **使用.dockerignore**: 排除不需要的文件
+
+##### 示例：优化的Dockerfile
+
+```dockerfile
+# 多阶段构建示例
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=builder /app/node_modules ./node_modules
+COPY . .
+RUN rm -rf /tmp/* /var/cache/apk/* && \
+    npm cache clean --force
+CMD ["node", "index.js"]
+```
+
+### 优化效果对比
+
+| 镜像类型 | 原始大小 | 优化后大小 | 节省空间 | 优化方法 |
+|---------|---------|-----------|---------|---------|
+| nginx:latest | 142MB | 98MB | 31% | compress |
+| vllm/vllm-openai:latest | 11.2GB | 8.5GB | 24% | squash + compress |
+| ubuntu:22.04 | 77MB | 65MB | 16% | compress |
+
+### 注意事项
+
+1. **兼容性**: 优化后的镜像功能应该与原始镜像完全一致
+2. **测试**: 优化后建议测试镜像是否正常工作
+3. **备份**: 优化前建议备份原始镜像
+4. **时间成本**: 大镜像优化可能需要较长时间
+5. **磁盘空间**: 优化过程中需要足够的磁盘空间
+
+---
+
 ## 使用说明
 
-（待补充项目具体使用方法）
+### 本地使用
+
+#### 1. 优化单个镜像
+
+```bash
+# 给脚本添加执行权限
+chmod +x scripts/optimizeDockerImage.sh
+
+# 优化镜像并推送到GitHub Container Registry
+./scripts/optimizeDockerImage.sh \
+  nginx:latest \
+  ghcr.io/your-username/nginx:latest \
+  --compress
+```
+
+#### 2. 批量处理镜像
+
+使用GitHub Actions工作流自动处理 `images.json` 中配置的所有镜像。
+
+### GitHub Actions使用
+
+#### 1. 配置仓库
+
+确保 `images.json` 文件包含需要优化的镜像配置。
+
+#### 2. 触发工作流
+
+- **手动触发**: 在GitHub Actions页面手动运行工作流
+- **定时触发**: 工作流会按照配置的cron时间自动执行
+- **推送触发**: 可以修改工作流配置，添加push事件触发
+
+#### 3. 查看结果
+
+工作流执行完成后，可以在GitHub Actions页面查看：
+- 优化前后的大小对比
+- 推送状态
+- 错误日志（如果有）
+
+### 镜像拉取
+
+优化后的镜像可以通过以下方式拉取：
+
+```bash
+# 登录GitHub Container Registry
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+# 拉取优化后的镜像
+docker pull ghcr.io/your-username/nginx-amd64:latest
+```
+
+---
 
 ## 许可证
 
