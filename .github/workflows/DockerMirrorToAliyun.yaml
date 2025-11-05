@@ -45,71 +45,79 @@ jobs:
           target=$(jq -r ".[$i].target" images.json)
           tag_count=$(jq ".[$i].tags | length" images.json)
           
+          # Get architectures (default to amd64,arm64)
+          if jq -e ".[$i].architectures | type == \"array\"" images.json > /dev/null; then
+            arch_count=$(jq ".[$i].architectures | length" images.json)
+          else
+            arch_count=2
+          fi
+          
           echo "Source: $source"
           echo "Target: $target"
           echo "Tag count: $tag_count"
+          echo "Architecture count: $arch_count"
           
           if [ "$source" = "null" ] || [ "$target" = "null" ]; then
             echo "❌ Invalid data at index $i"
             continue
           fi
           
+          # Extract base image name from source (remove tag)
+          base_image=$(echo "$source" | cut -d: -f1)
+          
           # Process tags - create separate images for each architecture
           for j in $(seq 0 $((tag_count-1))); do
             tag=$(jq -r ".[$i].tags[$j]" images.json)
             echo "🏷️  Processing tag: $tag"
             
-            # Create amd64 version
-            amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
-            echo "📥 Pulling $source for amd64..."
-            if docker pull --platform linux/amd64 "$source"; then
-              echo "✅ amd64 pull successful"
-              echo "📦 Tagging as $amd64_target"
-              if docker tag "$source" "$amd64_target"; then
-                echo "✅ Tag successful"
-                echo "📤 Pushing to registry..."
-                # Use --platform to ensure correct architecture is pushed
-                if docker push "$amd64_target"; then
-                  echo "✅ amd64 version pushed successfully: $amd64_target"
-                else
-                  echo "❌ Failed to push amd64 version"
-                fi
-              else
-                echo "❌ Failed to tag amd64 version"
-              fi
-              # Clean up
-              docker rmi "$source" || true
-            else
-              echo "❌ Failed to pull amd64 version"
-            fi
+            # Build image reference with current tag
+            image_ref="${base_image}:${tag}"
             
-            # Create arm64 version
-            arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
-            echo "📥 Pulling $source for arm64..."
-            if docker pull --platform linux/arm64 "$source"; then
-              echo "✅ arm64 pull successful"
-              echo "📦 Tagging as $arm64_target"
-              if docker tag "$source" "$arm64_target"; then
-                echo "✅ Tag successful"
-                echo "📤 Pushing to registry..."
-                # Use --platform to ensure correct architecture is pushed
-                if docker push "$arm64_target"; then
-                  echo "✅ arm64 version pushed successfully: $arm64_target"
-                else
-                  echo "❌ Failed to push arm64 version"
-                fi
+            # Process each architecture
+            for k in $(seq 0 $((arch_count-1))); do
+              if jq -e ".[$i].architectures | type == \"array\"" images.json > /dev/null; then
+                arch=$(jq -r ".[$i].architectures[$k]" images.json)
               else
-                echo "❌ Failed to tag arm64 version"
+                # Default architectures
+                case $k in
+                  0) arch="amd64" ;;
+                  1) arch="arm64" ;;
+                  *) continue ;;
+                esac
               fi
-              # Clean up
-              docker rmi "$source" || true
-            else
-              echo "❌ Failed to pull arm64 version"
-            fi
-            
-            # Clean up tagged images
-            docker rmi "$amd64_target" || true
-            docker rmi "$arm64_target" || true
+              
+              # Map arch to platform
+              case "$arch" in
+                "amd64") platform="linux/amd64"; suffix="amd64" ;;
+                "arm64") platform="linux/arm64"; suffix="arm64" ;;
+                "arm") platform="linux/arm/v7"; suffix="arm" ;;
+                *) platform="linux/$arch"; suffix="$arch" ;;
+              esac
+              
+              final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${suffix}:${tag}"
+              echo "🖥️  Processing architecture: $arch ($platform)"
+              echo "📥 Pulling $image_ref for $arch..."
+              
+              if docker pull --platform "$platform" "$image_ref"; then
+                echo "✅ $arch pull successful"
+                echo "📦 Tagging as $final_target"
+                if docker tag "$image_ref" "$final_target"; then
+                  echo "✅ Tag successful"
+                  echo "📤 Pushing to registry..."
+                  if docker push "$final_target"; then
+                    echo "✅ $arch version pushed successfully: $final_target"
+                  else
+                    echo "❌ Failed to push $arch version"
+                  fi
+                  docker rmi "$final_target" || true
+                else
+                  echo "❌ Failed to tag $arch version"
+                fi
+                docker rmi "$image_ref" || true
+              else
+                echo "⏭️  $arch not available, skipping"
+              fi
+            done
           done
         done
 

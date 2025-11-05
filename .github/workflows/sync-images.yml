@@ -35,70 +35,78 @@ jobs:
 
     - name: Validate and process config
       run: |
-        echo "=== Validating resp.json ==="
+        echo "=== Validating images.json ==="
         
         # Check if file exists
-        if [ ! -f "resp.json" ]; then
-          echo "❌ resp.json not found"
+        if [ ! -f "images.json" ]; then
+          echo "❌ images.json not found"
           exit 1
         fi
         
         # Show content
         echo "File content:"
-        cat resp.json
+        cat images.json
         echo ""
         
         # Validate JSON
-        if ! jq empty resp.json; then
+        if ! jq empty images.json; then
           echo "❌ Invalid JSON format"
           exit 1
         fi
         
         # Check if it's an array
-        if ! jq -e 'type == "array"' resp.json > /dev/null; then
+        if ! jq -e 'type == "array"' images.json > /dev/null; then
           echo "❌ JSON must be an array"
           exit 1
         fi
         
         # Process each item
-        count=$(jq 'length' resp.json)
+        count=$(jq 'length' images.json)
         echo "Found $count images to process"
         echo "[" > images_processed.json
         
         for i in $(seq 0 $((count-1))); do
           echo "Processing item $i..."
           
-          # Get target
-          target=$(jq -r ".[$i].target // empty" resp.json)
-          if [ -z "$target" ]; then
-            echo "⚠️  Skipping item $i - no target"
+          # Get source (required)
+          source=$(jq -r ".[$i].source // empty" images.json)
+          if [ -z "$source" ]; then
+            echo "⚠️  Skipping item $i - no source"
             continue
           fi
           
-          # Get source (default to target)
-          source=$(jq -r ".[$i].source // \"$target\"" resp.json)
+          # Get target (default to extracted name from source)
+          target=$(jq -r ".[$i].target // empty" images.json)
+          if [ -z "$target" ]; then
+            # Extract image name from source (remove tag part)
+            target=$(echo "$source" | cut -d: -f1 | awk -F'/' '{print $NF}')
+            echo "⚠️  No target specified, using extracted name: $target"
+          fi
           
           # Get architectures (default to amd64,arm64)
-          if jq -e ".[$i].architectures | type == \"array\"" resp.json > /dev/null; then
-            archs=$(jq -c ".[$i].architectures" resp.json)
+          if jq -e ".[$i].architectures | type == \"array\"" images.json > /dev/null; then
+            archs=$(jq -c ".[$i].architectures" images.json)
           else
             archs='["amd64","arm64"]'
           fi
           
           # Get tags (must exist)
-          if jq -e ".[$i].tags | type == \"array\"" resp.json > /dev/null; then
-            tags=$(jq -c ".[$i].tags" resp.json)
+          if jq -e ".[$i].tags | type == \"array\"" images.json > /dev/null; then
+            tags=$(jq -c ".[$i].tags" images.json)
           else
             echo "⚠️  Skipping $target - no valid tags"
             continue
           fi
+          
+          # Extract base image name from source (remove tag)
+          base_image=$(echo "$source" | cut -d: -f1)
           
           # Add to processed file
           if [ $i -gt 0 ]; then
             echo "," >> images_processed.json
           fi
           
-          jq -n --arg source "$source" --arg target "$target" --argjson tags "$tags" --argjson archs "$archs" '{
+          jq -n --arg source "$base_image" --arg target "$target" --argjson tags "$tags" --argjson archs "$archs" '{
             source: $source,
             target: $target,
             tags: $tags,
