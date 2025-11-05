@@ -124,8 +124,17 @@ jobs:
           
           # 检查是否为大镜像（如 vllm, pytorch 等），如果是则强制清理
           if echo "$source" | grep -qiE "(vllm|pytorch|tensorflow|large|big)"; then
-            echo "⚠️  Detected large image, performing force cleanup..."
+            echo "⚠️  Detected large image (~11GB+), performing aggressive cleanup..."
             force_cleanup
+            # 对于大镜像，需要确保磁盘使用率低于 50%
+            usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+            while [ "$usage_percent" -gt 50 ]; do
+              echo "⚠️  Disk usage ${usage_percent}% still too high for large image, cleaning again..."
+              force_cleanup
+              usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              sleep 2
+            done
+            echo "✅ Disk usage is ${usage_percent}%, safe to proceed with large image"
           else
             # 在处理每个镜像之前检查并清理
             check_and_cleanup_if_needed
@@ -180,15 +189,33 @@ jobs:
               final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-${suffix}:${tag}"
               echo "🖥️  Processing architecture: $arch ($platform)"
               
-              # 在拉取前检查磁盘空间，如果使用率超过 60% 则强制清理
+              # 在拉取前检查磁盘空间
               usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-              echo "📊 Current disk usage: ${usage_percent}%"
-              if [ "$usage_percent" -gt 60 ]; then
-                echo "⚠️  Disk usage is ${usage_percent}%, performing force cleanup before pull..."
-                force_cleanup
-                # 再次检查磁盘空间
-                usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-                echo "📊 Disk usage after cleanup: ${usage_percent}%"
+              available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+              echo "📊 Current disk usage: ${usage_percent}%, Available: ${available_gb}GB"
+              
+              # 检查是否为大镜像（如 vllm），需要更多空间
+              is_large_image=false
+              if echo "$source" | grep -qiE "(vllm|pytorch|tensorflow|large|big)"; then
+                is_large_image=true
+                echo "⚠️  Large image detected, need at least 15GB free space"
+                # 对于大镜像，需要更低的使用率和更多的可用空间
+                if [ "$usage_percent" -gt 50 ] || [ "$available_gb" -lt 15 ]; then
+                  echo "⚠️  Insufficient space for large image, performing force cleanup..."
+                  force_cleanup
+                  usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+                  available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+                  echo "📊 Disk usage after cleanup: ${usage_percent}%, Available: ${available_gb}GB"
+                fi
+              else
+                # 普通镜像，使用率超过 60% 则清理
+                if [ "$usage_percent" -gt 60 ]; then
+                  echo "⚠️  Disk usage is ${usage_percent}%, performing cleanup before pull..."
+                  force_cleanup
+                  usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+                  available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+                  echo "📊 Disk usage after cleanup: ${usage_percent}%, Available: ${available_gb}GB"
+                fi
               fi
               
               echo "📥 Pulling $image_ref for $arch..."
