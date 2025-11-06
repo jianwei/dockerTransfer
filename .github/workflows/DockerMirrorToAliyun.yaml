@@ -22,7 +22,6 @@ jobs:
       with:
         driver-opts: |
           image=moby/buildkit:latest
-          network=host
 
     - name: Login to Alibaba Cloud Container Registry
       uses: docker/login-action@v2
@@ -105,6 +104,11 @@ jobs:
         BUILDKIT_PROGRESS: plain
         DOCKER_CLI_EXPERIMENTAL: enabled
       run: |
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║          Job: sync-images                                    ║"
+        echo "║          Step: Process images                                 ║"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+        echo ""
         echo "=== Starting image processing ==="
         
         # 启用 BuildKit 并配置
@@ -234,7 +238,9 @@ EOF
         
         # Read the JSON file directly in the shell
         count=$(jq 'length' images.json)
-        echo "Found $count images to process"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📦 Found $count images to process"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         # 检测大镜像并优先处理，避免同时处理多个大镜像
         large_images=()
@@ -251,10 +257,13 @@ EOF
         
         echo "📊 Found ${#large_images[@]} large images and ${#normal_images[@]} normal images"
         echo "📋 Processing large images first, then normal images..."
+        echo ""
         
         # 先处理大镜像（逐个处理，避免空间不足）
         for idx in "${large_images[@]}"; do
-          echo "=== Processing LARGE image $((idx+1))/$count ==="
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔴 Processing LARGE image $((idx+1))/$count"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           # Extract values one by one with error checking
           source=$(jq -r ".[$idx].source" images.json)
@@ -445,7 +454,9 @@ EOF
         
         # 再处理普通镜像
         for idx in "${normal_images[@]}"; do
-          echo "=== Processing image $((idx+1))/$count ==="
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🟢 Processing image $((idx+1))/$count"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           # Extract values one by one with error checking
           source=$(jq -r ".[$idx].source" images.json)
@@ -608,6 +619,11 @@ EOF
     - name: Summary
       if: always()
       run: |
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║          Job: sync-images                                    ║"
+        echo "║          Step: Summary                                        ║"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+        echo ""
         echo "🏁 Processing completed"
         echo "=== Final Docker images ==="
         docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
@@ -622,3 +638,7 @@ EOF
         
         echo "💾 Final disk space:"
         df -h
+        echo ""
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║          Job: sync-images - COMPLETED                       ║"
+        echo "╚══════════════════════════════════════════════════════════════╝"
