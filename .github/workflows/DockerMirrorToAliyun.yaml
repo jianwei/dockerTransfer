@@ -141,13 +141,18 @@ jobs:
         }
         
         # 确保有足够空间（对大镜像需要更多空间）
+        # 参数: $1=镜像名称, $2=是否强制继续（true/false，默认false）
         ensure_space() {
           local image_name="$1"
+          local force_continue="${2:-false}"  # 默认不强制继续
           local min_space_gb=15  # 默认最少需要15GB
           
           if is_large_image "$image_name"; then
-            min_space_gb=25  # 大镜像需要至少25GB
-            echo "⚠️  检测到大镜像，需要至少 ${min_space_gb}GB 可用空间"
+            # vllm等大镜像压缩后11GB+，未压缩可能需要25-30GB
+            # 加上构建缓存和临时文件，需要至少35GB安全空间
+            min_space_gb=35
+            echo "⚠️  检测到大镜像 ($image_name)，需要至少 ${min_space_gb}GB 可用空间"
+            echo "💡 大镜像处理策略：将使用强制清理确保足够空间"
           fi
           
           usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
@@ -155,10 +160,18 @@ jobs:
           
           echo "📊 磁盘状态: 使用率 ${usage_percent}%, 可用空间 ${available_gb}GB"
           
-          # 如果使用率超过65%或可用空间不足，执行清理
-          if [ "$usage_percent" -gt 65 ] || [ "$available_gb" -lt "$min_space_gb" ]; then
-            echo "⚠️  空间不足，执行清理..."
-            if [ "$usage_percent" -gt 70 ] || [ "$available_gb" -lt "$min_space_gb" ]; then
+          # 如果使用率超过60%或可用空间不足，执行清理
+          # 对大镜像使用更严格的标准
+          local cleanup_threshold=60
+          if is_large_image "$image_name"; then
+            cleanup_threshold=55  # 大镜像使用更低的阈值，提前清理
+          fi
+          
+          if [ "$usage_percent" -gt "$cleanup_threshold" ] || [ "$available_gb" -lt "$min_space_gb" ]; then
+            echo "⚠️  空间不足（使用率 ${usage_percent}% > ${cleanup_threshold}% 或可用空间 ${available_gb}GB < ${min_space_gb}GB），执行清理..."
+            
+            # 对于大镜像或空间严重不足的情况，使用强制清理
+            if [ "$usage_percent" -gt 70 ] || [ "$available_gb" -lt "$min_space_gb" ] || is_large_image "$image_name"; then
               force_cleanup
             else
               cleanup_docker
@@ -169,10 +182,23 @@ jobs:
             available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
             echo "📊 清理后磁盘状态: 使用率 ${usage_percent}%, 可用空间 ${available_gb}GB"
             
-            # 如果仍然不足，返回失败
+            # 如果仍然不足
             if [ "$available_gb" -lt "$min_space_gb" ]; then
-              echo "❌ 清理后仍然空间不足，需要至少 ${min_space_gb}GB"
-              return 1
+              if [ "$force_continue" = "true" ]; then
+                echo "⚠️  清理后空间仍然不足（需要至少 ${min_space_gb}GB，当前可用 ${available_gb}GB）"
+                echo "💡 强制继续模式：将继续尝试，但可能因空间不足而失败"
+                # 尝试再次强制清理
+                echo "🔄 执行最后一次强制清理..."
+                force_cleanup
+                sleep 2
+                # 再次检查
+                available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
+                echo "📊 最终可用空间: ${available_gb}GB"
+                return 0  # 即使空间不足也继续
+              else
+                echo "❌ 清理后仍然空间不足，需要至少 ${min_space_gb}GB，当前可用 ${available_gb}GB"
+                return 1
+              fi
             fi
           fi
           
@@ -232,28 +258,39 @@ jobs:
               final_target="${{ env.REGISTRY }}/${GITHUB_NAMESPACE}/${target}-${suffix}:${tag}"
               echo "🖥️  处理架构: $arch ($platform)"
               
-              # 检查并确保有足够空间
-              if ! ensure_space "$source"; then
-                echo "❌ 空间不足，跳过此镜像"
-                continue
+              # 检查并确保有足够空间（强制继续模式，不跳过）
+              echo "🔍 检查磁盘空间..."
+              ensure_space "$source" "true" || {
+                echo "⚠️  空间检查警告，但将继续尝试..."
+              }
+              
+              # 大镜像拉取前的特殊处理
+              if is_large_image "$source"; then
+                echo "🔍 检测到大镜像，拉取前进行预清理..."
+                docker buildx prune -af || true
+                docker image prune -af || true
+                echo "✅ 预清理完成"
               fi
               
               # 拉取源镜像
               echo "📥 拉取 $image_ref ($arch)..."
+              if is_large_image "$source"; then
+                echo "💡 大镜像拉取可能需要较长时间，请耐心等待..."
+              fi
+              
               pull_success=false
               for retry in 1 2 3; do
-                # 拉取前再次检查空间
-                if ! ensure_space "$source"; then
-                  echo "❌ 拉取前空间检查失败，跳过"
-                  break
-                fi
+                # 拉取前再次检查空间（强制继续模式）
+                ensure_space "$source" "true" || {
+                  echo "⚠️  拉取前空间检查警告，但将继续尝试..."
+                }
                 
                 if docker pull --platform "$platform" "$image_ref"; then
                   pull_success=true
                   break
                 else
                   if [ $retry -lt 3 ]; then
-                    echo "⚠️  拉取失败 (尝试 $retry)，执行强制清理后重试..."
+                    echo "⚠️  拉取失败 (尝试 $retry/3)，执行强制清理后重试..."
                     force_cleanup
                     sleep 5
                   fi
