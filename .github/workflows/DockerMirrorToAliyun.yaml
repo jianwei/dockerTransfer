@@ -53,7 +53,35 @@ jobs:
         # 定义清理函数
         cleanup_docker() {
           echo "🧹 执行Docker清理..."
+          echo "📊 清理前Docker系统使用情况:"
+          docker system df || true
+          
+          # 清理buildx缓存（可能占用大量空间）
+          echo "🧹 清理buildx构建缓存..."
+          docker buildx prune -af || true
+          
+          # 清理未使用的镜像（包括dangling镜像）
+          echo "🧹 清理未使用的镜像..."
+          docker image prune -af || true
+          
+          # 清理未使用的容器
+          echo "🧹 清理未使用的容器..."
+          docker container prune -f || true
+          
+          # 清理未使用的卷
+          echo "🧹 清理未使用的卷..."
+          docker volume prune -f || true
+          
+          # 清理未使用的网络
+          echo "🧹 清理未使用的网络..."
+          docker network prune -f || true
+          
+          # 清理所有未使用的资源
+          echo "🧹 清理所有未使用的资源..."
           docker system prune -af --volumes || true
+          
+          echo "📊 清理后Docker系统使用情况:"
+          docker system df || true
           echo "💾 清理后磁盘空间:"
           df -h
         }
@@ -61,26 +89,43 @@ jobs:
         # 强制清理函数，用于大镜像处理
         force_cleanup() {
           echo "🧹 执行强制清理..."
+          echo "📊 清理前Docker系统使用情况:"
+          docker system df || true
+          
           # 停止所有运行中的容器
           running_containers=$(docker ps -q)
           if [ -n "$running_containers" ]; then
+            echo "🛑 停止运行中的容器..."
             echo "$running_containers" | xargs docker stop || true
           fi
+          
           # 删除所有容器
           container_ids=$(docker ps -aq)
           if [ -n "$container_ids" ]; then
+            echo "🗑️  删除所有容器..."
             echo "$container_ids" | xargs docker rm -f || true
           fi
+          
           # 删除所有镜像
           image_ids=$(docker images -q)
           if [ -n "$image_ids" ]; then
+            echo "🗑️  删除所有镜像..."
             echo "$image_ids" | xargs docker rmi -f || true
           fi
+          
+          # 清理buildx缓存（可能占用大量空间）
+          echo "🧹 清理buildx构建缓存..."
+          docker buildx prune -af || true
+          
           # 清理所有资源
+          echo "🧹 清理所有未使用的资源..."
           docker volume prune -f || true
           docker network prune -f || true
           docker builder prune -af || true
           docker system prune -af --volumes || true
+          
+          echo "📊 清理后Docker系统使用情况:"
+          docker system df || true
           echo "💾 强制清理后磁盘空间:"
           df -h
         }
@@ -256,11 +301,15 @@ jobs:
                   echo "❌ 推送 $arch 版本失败"
                 fi
                 
-                # 立即清理本地镜像，释放空间
+                # 立即清理本地镜像和构建缓存，释放空间
                 echo "🧹 立即清理本地镜像..."
                 docker rmi "$final_target" || true
                 docker rmi "$image_ref" || true
                 docker image prune -f || true
+                
+                # 清理buildx构建缓存（优化过程中可能产生大量缓存）
+                echo "🧹 清理buildx构建缓存..."
+                docker buildx prune -af || true
                 
                 # 显示清理后的空间
                 usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
@@ -273,6 +322,7 @@ jobs:
               # 每个架构处理完后清理
               echo "🧹 架构处理完成后清理..."
               docker image prune -f || true
+              docker buildx prune -af || true
             done
             
             # 每个标签处理完后清理
