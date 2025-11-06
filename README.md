@@ -269,34 +269,7 @@ pip3 install docker-squash
 ==========================================
 ```
 
-#### 2. 使用GitHub Actions自动优化
-
-项目提供了 `.github/workflows/optimizeAndPushToGitHub.yaml` 工作流，可以自动优化镜像并推送到GitHub Container Registry。
-
-##### 使用方法
-
-1. **配置GitHub Secrets**（如果需要推送到私有仓库）:
-   - 工作流会自动使用 `GITHUB_TOKEN`，无需额外配置
-
-2. **手动触发工作流**:
-   - 前往 GitHub Actions 页面
-   - 选择 "Optimize and Push Docker Images to GitHub Container Registry"
-   - 点击 "Run workflow"
-
-3. **定时执行**:
-   - 工作流默认每天凌晨3点自动执行
-   - 可以在 `.github/workflows/optimizeAndPushToGitHub.yaml` 中修改cron表达式
-
-##### 工作流特性
-
-- ✅ 自动优化镜像大小（使用docker-squash和docker buildx）
-- ✅ 支持多架构镜像（amd64, arm64等）
-- ✅ 支持多标签管理
-- ✅ 自动清理Docker系统资源
-- ✅ 显示优化前后的大小对比
-- ✅ 错误重试机制
-
-#### 3. 优化技巧和最佳实践
+#### 2. 优化技巧和最佳实践
 
 ##### 选择合适的优化方法
 
@@ -375,38 +348,7 @@ chmod +x scripts/optimizeDockerImage.sh
 
 #### 2. 批量处理镜像
 
-使用GitHub Actions工作流自动处理 `images.json` 中配置的所有镜像。
-
-### GitHub Actions使用
-
-#### 1. 配置仓库
-
-确保 `images.json` 文件包含需要优化的镜像配置。
-
-#### 2. 触发工作流
-
-- **手动触发**: 在GitHub Actions页面手动运行工作流
-- **定时触发**: 工作流会按照配置的cron时间自动执行
-- **推送触发**: 可以修改工作流配置，添加push事件触发
-
-#### 3. 查看结果
-
-工作流执行完成后，可以在GitHub Actions页面查看：
-- 优化前后的大小对比
-- 推送状态
-- 错误日志（如果有）
-
-### 镜像拉取
-
-优化后的镜像可以通过以下方式拉取：
-
-```bash
-# 登录GitHub Container Registry
-echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-
-# 拉取优化后的镜像
-docker pull ghcr.io/your-username/nginx-amd64:latest
-```
+使用GitHub Actions工作流自动处理 `images.json` 中配置的所有镜像。项目提供了 `.github/workflows/DockerMirrorToAliyun.yaml` 工作流，可以将镜像同步到阿里云容器镜像仓库。
 
 ---
 
