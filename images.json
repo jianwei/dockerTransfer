@@ -1,12 +1,5 @@
 [
-    {
-        "source": "vllm/vllm-openai:latest",
-        "target": "vllm-openai",
-        "tags": [
-            "latest"
-        ],
-        "architectures": ["amd64", "arm64"]
-    },
+   
     {
         "source": "centos:centos7.9.2009",
         "target": "centos",
