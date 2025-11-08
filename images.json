@@ -1,45 +1,74 @@
 [
-   
     {
-        "source": "centos:centos7.9.2009",
+        "source": "centos:latest",
         "target": "centos",
         "tags": [
-            "centos7.9.2009",
-            "7.9.2009",
-            "7",
-            "centos8",
             "latest"
         ],
         "architectures": ["amd64", "arm64"]
     },
     {
-        "source": "nginx:1.21",
+        "source": "nginx:latest",
         "target": "nginx",
         "tags": [
-            "1.21",
             "latest"
         ],
         "architectures": ["amd64", "arm64"]
     },
     {
-        "source": "alpine:3.16",
+        "source": "alpine:latest",
         "target": "alpine",
         "tags": [
-            "3.16",
             "latest"
         ],
         "architectures": ["amd64", "arm64"]
     },
     {
-        "source": "ubuntu:22.04",
+        "source": "ubuntu:latest",
         "target": "ubuntu",
         "tags": [
-            "24.04",
-            "18.04",
-            "22.04",
             "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "redis:8.0.2",
+        "target": "redis",
+        "tags": [
+            "8.0.2"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mysql:8.0",
+        "target": "mysql",
+        "tags": [
+            "8.0"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "openresty/openresty:latest",
+        "target": "openresty",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "phpmyadmin:5.2.3",
+        "target": "phpmyadmin",
+        "tags": [
+            "5.2.3"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "ghcr.io/open-webui/open-webui:main",
+        "target": "open-webui",
+        "tags": [
+            "main"
         ],
         "architectures": ["amd64", "arm64"]
     }
-    
 ]
