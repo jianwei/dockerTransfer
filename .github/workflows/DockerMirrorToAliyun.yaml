@@ -1,387 +1,121 @@
-name: Optimize and Push Docker Images to GitHub Container Registry
+name: Sync Multi-Arch Docker Images to Alibaba Cloud
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * *'  # 每天凌晨3点执行
-
-env:
-  REGISTRY: ghcr.io
-  # 使用 ${{ github.repository_owner }} 自动获取仓库所有者作为命名空间
+    - cron: '0 2 * * *'
 
 jobs:
-  optimize-and-push:
+  sync-images:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v3
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v2
 
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
+    - name: Login to Alibaba Cloud Container Registry
+      uses: docker/login-action@v2
       with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        registry: registry.cn-hangzhou.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y jq python3-pip
-        pip3 install docker-squash || echo "docker-squash安装失败，将使用其他优化方法"
+        sudo apt-get install -y jq
 
-    - name: Make optimize script executable
-      run: chmod +x scripts/optimizeDockerImage.sh
-
-    - name: Clean Docker system before processing
+    - name: Process images
       run: |
-        echo "🧹 清理Docker系统..."
-        docker system prune -af --volumes || true
-        echo "💾 处理前磁盘空间:"
-        df -h
-
-    - name: Process and optimize images
-      run: |
-        set -euo pipefail
+        echo "=== Starting image processing ==="
         
-        # 定义清理函数
-        cleanup_docker() {
-          echo "🧹 执行Docker清理..."
-          echo "📊 清理前Docker系统使用情况:"
-          docker system df || true
-          
-          # 清理buildx缓存（可能占用大量空间）
-          echo "🧹 清理buildx构建缓存..."
-          docker buildx prune -af || true
-          
-          # 清理未使用的镜像（包括dangling镜像）
-          echo "🧹 清理未使用的镜像..."
-          docker image prune -af || true
-          
-          # 清理未使用的容器
-          echo "🧹 清理未使用的容器..."
-          docker container prune -f || true
-          
-          # 清理未使用的卷
-          echo "🧹 清理未使用的卷..."
-          docker volume prune -f || true
-          
-          # 清理未使用的网络
-          echo "🧹 清理未使用的网络..."
-          docker network prune -f || true
-          
-          # 清理所有未使用的资源
-          echo "🧹 清理所有未使用的资源..."
-          docker system prune -af --volumes || true
-          
-          echo "📊 清理后Docker系统使用情况:"
-          docker system df || true
-          echo "💾 清理后磁盘空间:"
-          df -h
-        }
-        
-        # 强制清理函数，用于大镜像处理
-        force_cleanup() {
-          echo "🧹 执行强制清理..."
-          echo "📊 清理前Docker系统使用情况:"
-          docker system df || true
-          
-          # 停止所有运行中的容器
-          running_containers=$(docker ps -q)
-          if [ -n "$running_containers" ]; then
-            echo "🛑 停止运行中的容器..."
-            echo "$running_containers" | xargs docker stop || true
-          fi
-          
-          # 删除所有容器
-          container_ids=$(docker ps -aq)
-          if [ -n "$container_ids" ]; then
-            echo "🗑️  删除所有容器..."
-            echo "$container_ids" | xargs docker rm -f || true
-          fi
-          
-          # 删除所有镜像
-          image_ids=$(docker images -q)
-          if [ -n "$image_ids" ]; then
-            echo "🗑️  删除所有镜像..."
-            echo "$image_ids" | xargs docker rmi -f || true
-          fi
-          
-          # 清理buildx缓存（可能占用大量空间）
-          echo "🧹 清理buildx构建缓存..."
-          docker buildx prune -af || true
-          
-          # 清理所有资源
-          echo "🧹 清理所有未使用的资源..."
-          docker volume prune -f || true
-          docker network prune -f || true
-          docker builder prune -af || true
-          docker system prune -af --volumes || true
-          
-          echo "📊 清理后Docker系统使用情况:"
-          docker system df || true
-          echo "💾 强制清理后磁盘空间:"
-          df -h
-        }
-        
-        # 检查是否为大镜像
-        is_large_image() {
-          local image_name="$1"
-          # 检测常见的大镜像名称模式
-          if echo "$image_name" | grep -qiE "(vllm|pytorch|tensorflow|large|big|ml|ai|gpu|cuda)"; then
-            return 0
-          fi
-          return 1
-        }
-        
-        # 确保有足够空间（对大镜像需要更多空间）
-        # 参数: $1=镜像名称, $2=是否强制继续（true/false，默认false）
-        ensure_space() {
-          local image_name="$1"
-          local force_continue="${2:-false}"  # 默认不强制继续
-          local min_space_gb=15  # 默认最少需要15GB
-          
-          if is_large_image "$image_name"; then
-            # vllm等大镜像压缩后11GB+，未压缩可能需要25-30GB
-            # 加上构建缓存和临时文件，需要至少35GB安全空间
-            min_space_gb=35
-            echo "⚠️  检测到大镜像 ($image_name)，需要至少 ${min_space_gb}GB 可用空间"
-            echo "💡 大镜像处理策略：将使用强制清理确保足够空间"
-          fi
-          
-          usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-          available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-          
-          echo "📊 磁盘状态: 使用率 ${usage_percent}%, 可用空间 ${available_gb}GB"
-          
-          # 如果使用率超过60%或可用空间不足，执行清理
-          # 对大镜像使用更严格的标准
-          local cleanup_threshold=60
-          if is_large_image "$image_name"; then
-            cleanup_threshold=55  # 大镜像使用更低的阈值，提前清理
-          fi
-          
-          if [ "$usage_percent" -gt "$cleanup_threshold" ] || [ "$available_gb" -lt "$min_space_gb" ]; then
-            echo "⚠️  空间不足（使用率 ${usage_percent}% > ${cleanup_threshold}% 或可用空间 ${available_gb}GB < ${min_space_gb}GB），执行清理..."
-            
-            # 对于大镜像或空间严重不足的情况，使用强制清理
-            if [ "$usage_percent" -gt 70 ] || [ "$available_gb" -lt "$min_space_gb" ] || is_large_image "$image_name"; then
-              force_cleanup
-            else
-              cleanup_docker
-            fi
-            
-            # 清理后再次检查
-            usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-            available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-            echo "📊 清理后磁盘状态: 使用率 ${usage_percent}%, 可用空间 ${available_gb}GB"
-            
-            # 如果仍然不足
-            if [ "$available_gb" -lt "$min_space_gb" ]; then
-              if [ "$force_continue" = "true" ]; then
-                echo "⚠️  清理后空间仍然不足（需要至少 ${min_space_gb}GB，当前可用 ${available_gb}GB）"
-                echo "💡 强制继续模式：将继续尝试，但可能因空间不足而失败"
-                # 尝试再次强制清理
-                echo "🔄 执行最后一次强制清理..."
-                force_cleanup
-                sleep 2
-                # 再次检查
-                available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-                echo "📊 最终可用空间: ${available_gb}GB"
-                return 0  # 即使空间不足也继续
-              else
-                echo "❌ 清理后仍然空间不足，需要至少 ${min_space_gb}GB，当前可用 ${available_gb}GB"
-                return 1
-              fi
-            fi
-          fi
-          
-          return 0
-        }
-        
-        # 获取GitHub仓库命名空间
-        GITHUB_NAMESPACE="${{ github.repository_owner }}"
-        
-        # 读取images.json配置
+        # Read the JSON file directly in the shell
         count=$(jq 'length' images.json)
-        echo "找到 $count 个镜像需要处理"
+        echo "Found $count images to process"
         
-        # 处理每个镜像
+        # Simple loop with proper error handling
         for i in $(seq 0 $((count-1))); do
-          echo "=== 处理镜像 $((i+1))/$count ==="
+          echo "=== Processing image $((i+1)) ==="
           
+          # Extract values one by one with error checking
           source=$(jq -r ".[$i].source" images.json)
           target=$(jq -r ".[$i].target" images.json)
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          
+          echo "Source: $source"
+          echo "Target: $target"
+          echo "Tag count: $tag_count"
           
           if [ "$source" = "null" ] || [ "$target" = "null" ]; then
-            echo "❌ 索引 $i 处的数据无效"
+            echo "❌ Invalid data at index $i"
             continue
           fi
           
-          tag_count=$(jq ".[$i].tags | length" images.json)
-          arch_count=$(jq ".[$i].architectures | length" images.json)
-          
-          echo "源镜像: $source"
-          echo "目标镜像: $target"
-          echo "标签数量: $tag_count"
-          echo "架构数量: $arch_count"
-          
-          # 提取基础镜像名称
-          base_image=$(echo "$source" | cut -d: -f1)
-          
-          # 处理每个标签
+          # Process tags - create separate images for each architecture
           for j in $(seq 0 $((tag_count-1))); do
             tag=$(jq -r ".[$i].tags[$j]" images.json)
-            echo "🏷️  处理标签: $tag"
+            echo "🏷️  Processing tag: $tag"
             
-            image_ref="${base_image}:${tag}"
-            
-            # 处理每个架构
-            for k in $(seq 0 $((arch_count-1))); do
-              arch=$(jq -r ".[$i].architectures[$k]" images.json)
-              
-              # 映射架构到平台
-              case "$arch" in
-                "amd64") platform="linux/amd64"; suffix="amd64" ;;
-                "arm64") platform="linux/arm64"; suffix="arm64" ;;
-                "arm/v7"|"arm") platform="linux/arm/v7"; suffix="armv7" ;;
-                *) platform="linux/$arch"; suffix="$arch" ;;
-              esac
-              
-              # 构建目标镜像地址
-              final_target="${{ env.REGISTRY }}/${GITHUB_NAMESPACE}/${target}-${suffix}:${tag}"
-              echo "🖥️  处理架构: $arch ($platform)"
-              
-              # 检查并确保有足够空间（强制继续模式，不跳过）
-              echo "🔍 检查磁盘空间..."
-              ensure_space "$source" "true" || {
-                echo "⚠️  空间检查警告，但将继续尝试..."
-              }
-              
-              # 大镜像拉取前的特殊处理
-              if is_large_image "$source"; then
-                echo "🔍 检测到大镜像，拉取前进行预清理..."
-                docker buildx prune -af || true
-                docker image prune -af || true
-                echo "✅ 预清理完成"
-              fi
-              
-              # 拉取源镜像
-              echo "📥 拉取 $image_ref ($arch)..."
-              if is_large_image "$source"; then
-                echo "💡 大镜像拉取可能需要较长时间，请耐心等待..."
-              fi
-              
-              pull_success=false
-              for retry in 1 2 3; do
-                # 拉取前再次检查空间（强制继续模式）
-                ensure_space "$source" "true" || {
-                  echo "⚠️  拉取前空间检查警告，但将继续尝试..."
-                }
-                
-                if docker pull --platform "$platform" "$image_ref"; then
-                  pull_success=true
-                  break
+            # Create amd64 version
+            amd64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-amd64:$tag"
+            echo "📥 Pulling $source for amd64..."
+            if docker pull --platform linux/amd64 "$source"; then
+              echo "✅ amd64 pull successful"
+              echo "📦 Tagging as $amd64_target"
+              if docker tag "$source" "$amd64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$amd64_target"; then
+                  echo "✅ amd64 version pushed successfully: $amd64_target"
                 else
-                  if [ $retry -lt 3 ]; then
-                    echo "⚠️  拉取失败 (尝试 $retry/3)，执行强制清理后重试..."
-                    force_cleanup
-                    sleep 5
-                  fi
+                  echo "❌ Failed to push amd64 version"
                 fi
-              done
-              
-              if [ "$pull_success" = true ]; then
-                echo "✅ $arch 拉取成功"
-                
-                # 拉取后立即清理未使用的镜像，释放空间
-                echo "🧹 拉取后清理未使用的镜像..."
-                docker image prune -f || true
-                
-                # 检查镜像大小
-                image_size=$(docker image inspect "$image_ref" --format='{{.Size}}' 2>/dev/null || echo "0")
-                image_size_gb=$((image_size / 1073741824))
-                echo "📦 镜像大小: ${image_size_gb}GB"
-                
-                # 使用优化脚本优化镜像大小
-                echo "🔧 使用优化脚本优化镜像大小..."
-                if ./scripts/optimizeDockerImage.sh "$image_ref" "$final_target" --compress --platform "$platform"; then
-                  echo "✅ 镜像优化成功"
-                else
-                  echo "⚠️  优化失败，使用原始镜像"
-                  docker tag "$image_ref" "$final_target"
-                fi
-                
-                # 推送到GitHub Container Registry
-                echo "📤 推送到 $final_target..."
-                push_success=false
-                for push_retry in 1 2 3; do
-                  if docker push "$final_target"; then
-                    push_success=true
-                    echo "✅ $arch 版本推送成功: $final_target"
-                    break
-                  else
-                    if [ $push_retry -lt 3 ]; then
-                      echo "⚠️  推送失败 (尝试 $push_retry)，重试..."
-                      sleep 3
-                    fi
-                  fi
-                done
-                
-                if [ "$push_success" = false ]; then
-                  echo "❌ 推送 $arch 版本失败"
-                fi
-                
-                # 立即清理本地镜像和构建缓存，释放空间
-                echo "🧹 立即清理本地镜像..."
-                docker rmi "$final_target" || true
-                docker rmi "$image_ref" || true
-                docker image prune -f || true
-                
-                # 清理buildx构建缓存（优化过程中可能产生大量缓存）
-                echo "🧹 清理buildx构建缓存..."
-                docker buildx prune -af || true
-                
-                # 显示清理后的空间
-                usage_percent=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-                available_gb=$(df / | tail -1 | awk '{print int($4/1024/1024)}')
-                echo "📊 清理后磁盘状态: 使用率 ${usage_percent}%, 可用空间 ${available_gb}GB"
               else
-                echo "⏭️  $arch 在3次尝试后仍不可用，跳过"
+                echo "❌ Failed to tag amd64 version"
               fi
-              
-              # 每个架构处理完后清理
-              echo "🧹 架构处理完成后清理..."
-              docker image prune -f || true
-              docker buildx prune -af || true
-            done
+              # Clean up
+              docker rmi "$source" || true
+            else
+              echo "❌ Failed to pull amd64 version"
+            fi
             
-            # 每个标签处理完后清理
-            echo "🧹 标签处理完成后清理..."
-            cleanup_docker
+            # Create arm64 version
+            arm64_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}-arm64:$tag"
+            echo "📥 Pulling $source for arm64..."
+            if docker pull --platform linux/arm64 "$source"; then
+              echo "✅ arm64 pull successful"
+              echo "📦 Tagging as $arm64_target"
+              if docker tag "$source" "$arm64_target"; then
+                echo "✅ Tag successful"
+                echo "📤 Pushing to registry..."
+                # Use --platform to ensure correct architecture is pushed
+                if docker push "$arm64_target"; then
+                  echo "✅ arm64 version pushed successfully: $arm64_target"
+                else
+                  echo "❌ Failed to push arm64 version"
+                fi
+              else
+                echo "❌ Failed to tag arm64 version"
+              fi
+              # Clean up
+              docker rmi "$source" || true
+            else
+              echo "❌ Failed to pull arm64 version"
+            fi
+            
+            # Clean up tagged images
+            docker rmi "$amd64_target" || true
+            docker rmi "$arm64_target" || true
           done
-          
-          # 每个镜像处理完后清理
-          echo "🧹 镜像处理完成后清理..."
-          cleanup_docker
         done
 
     - name: Summary
       if: always()
       run: |
-        echo "🏁 处理完成"
-        echo "=== 最终Docker镜像 ==="
-        docker images | head -20 || echo "未找到镜像"
-        echo ""
-        echo "💾 最终磁盘使用情况:"
-        df -h
-        echo ""
-        echo "🐳 Docker系统使用情况:"
-        docker system df || true
-
+        echo "🏁 Processing completed"
+        echo "=== Final Docker images ==="
+        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
