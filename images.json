@@ -70,13 +70,5 @@
             "main"
         ],
         "architectures": ["amd64", "arm64"]
-    },
-    {
-        "source": "ghcr.io/jianwei/one-api:latest",
-        "target": "one-api",
-        "tags": [
-            "latest"
-        ],
-        "architectures": ["amd64", "arm64"]
     }
 ]
