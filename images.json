@@ -78,5 +78,69 @@
             "12.0.0-base-ubuntu22.04"
         ],
         "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "n8nio/n8n:1.120.2",
+        "target": "n8n",
+        "tags": [
+            "1.120.2"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "linuxserver/code-server:4.105.1",
+        "target": "code-server",
+        "tags": [
+            "4.105.1"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/sequentialthinking:latest",
+        "target": "sequentialthinking",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/fetch:latest",
+        "target": "fetch",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/context7:latest",
+        "target": "context7",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/playwright:latest",
+        "target": "playwright",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/firecrawl:latest",
+        "target": "firecrawl",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "vllm/vllm-openai:v0.9.2",
+        "target": "vllm-openai",
+        "tags": [
+            "v0.9.2"
+        ],
+        "architectures": ["amd64", "arm64"]
     }
 ]
