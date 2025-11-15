@@ -195,17 +195,34 @@ jobs:
             # 使用 skopeo 创建多架构 manifest
             echo "🔗 Creating multi-arch manifest for $final_target"
             
-            # 获取两个架构的 manifest digest
-            amd64_digest=$(skopeo inspect "docker://$temp_amd64" | jq -r '.Digest')
-            arm64_digest=$(skopeo inspect "docker://$temp_arm64" | jq -r '.Digest')
-            
             # 获取两个架构的 manifest 详细信息
+            echo "📋 Getting manifest information for amd64..."
+            amd64_info=$(skopeo inspect "docker://$temp_amd64")
+            amd64_digest=$(echo "$amd64_info" | jq -r '.Digest')
             amd64_manifest=$(skopeo inspect --raw "docker://$temp_amd64")
-            arm64_manifest=$(skopeo inspect --raw "docker://$temp_arm64")
+            # manifest 大小是 JSON 的字节数
+            amd64_size=$(echo -n "$amd64_manifest" | wc -c)
             
-            # 计算 manifest 大小
-            amd64_size=$(echo "$amd64_manifest" | jq -r '.config.size + ([.layers[].size] | add)')
-            arm64_size=$(echo "$arm64_manifest" | jq -r '.config.size + ([.layers[].size] | add)')
+            echo "📋 Getting manifest information for arm64..."
+            arm64_info=$(skopeo inspect "docker://$temp_arm64")
+            arm64_digest=$(echo "$arm64_info" | jq -r '.Digest')
+            arm64_manifest=$(skopeo inspect --raw "docker://$temp_arm64")
+            # manifest 大小是 JSON 的字节数
+            arm64_size=$(echo -n "$arm64_manifest" | wc -c)
+            
+            echo "📊 Manifest digests:"
+            echo "   amd64: $amd64_digest (size: $amd64_size bytes)"
+            echo "   arm64: $arm64_digest (size: $arm64_size bytes)"
+            
+            # 验证 digest 格式
+            if [ -z "$amd64_digest" ] || [ "$amd64_digest" = "null" ] || ! echo "$amd64_digest" | grep -q "^sha256:"; then
+              echo "❌ Invalid amd64 digest: $amd64_digest"
+              continue
+            fi
+            if [ -z "$arm64_digest" ] || [ "$arm64_digest" = "null" ] || ! echo "$arm64_digest" | grep -q "^sha256:"; then
+              echo "❌ Invalid arm64 digest: $arm64_digest"
+              continue
+            fi
             
             # 创建 manifest list
             manifest_list=$(jq -n \
@@ -278,21 +295,38 @@ jobs:
             fi
             
             # 如果获取到 token，推送 manifest list
+            manifest_created=false
             if [ -n "$token" ] && [ "$token" != "null" ]; then
               echo "📤 Pushing multi-arch manifest list..."
               manifest_size=$(echo "$manifest_list" | wc -c)
               put_url="https://${registry_host}/v2/${image_path}/manifests/${image_tag}"
               
-              if curl -s -X PUT "$put_url" \
+              http_response=$(curl -s -X PUT "$put_url" \
                 -H "Authorization: Bearer $token" \
                 -H "Content-Type: application/vnd.docker.distribution.manifest.list.v2+json" \
                 -H "Content-Length: $manifest_size" \
                 --data-binary @/tmp/manifest-list.json \
-                -w "\nHTTP Status: %{http_code}\n" | grep -q "HTTP Status: 201\|HTTP Status: 200"; then
+                -w "\nHTTP_STATUS:%{http_code}")
+              
+              http_code=$(echo "$http_response" | grep -oP 'HTTP_STATUS:\K\d+')
+              
+              if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
                 echo "✅ Multi-arch manifest created successfully: $final_target"
+                manifest_created=true
+                
+                # 验证 manifest list 是否创建成功
+                echo "🔍 Verifying manifest list..."
+                if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
+                  echo "✅ Manifest list verified successfully"
+                else
+                  echo "⚠️  Warning: Manifest list verification failed"
+                fi
               else
-                echo "⚠️  Failed to push manifest list via API, but individual images are available"
-                echo "   You may need to use docker buildx imagetools create manually"
+                echo "❌ Failed to push manifest list via API (HTTP $http_code)"
+                echo "   Response: $(echo "$http_response" | head -n -1)"
+                echo "⚠️  Individual architecture images are still available at:"
+                echo "   - $temp_amd64"
+                echo "   - $temp_arm64"
               fi
             else
               echo "⚠️  Could not obtain authentication token"
@@ -306,10 +340,21 @@ jobs:
             # 清理临时文件
             rm -f /tmp/manifest-list.json
             
-            # 清理临时镜像标签（可选，保留它们也不影响使用）
-            echo "🧹 Cleaning up temporary tags..."
-            skopeo delete "docker://$temp_amd64" 2>/dev/null || true
-            skopeo delete "docker://$temp_arm64" 2>/dev/null || true
+            # 只有在 manifest list 创建成功后才清理临时镜像标签
+            # 注意：即使删除临时标签，manifest list 仍然有效，因为它引用的是 digest
+            # 但为了安全起见，我们只在成功创建 manifest list 后才删除
+            if [ "$manifest_created" = "true" ]; then
+              echo "🧹 Cleaning up temporary tags (manifest list created successfully)..."
+              # 等待一小段时间确保 manifest list 已完全创建
+              sleep 2
+              skopeo delete "docker://$temp_amd64" 2>/dev/null || echo "⚠️  Failed to delete $temp_amd64 (may already be deleted or in use)"
+              skopeo delete "docker://$temp_arm64" 2>/dev/null || echo "⚠️  Failed to delete $temp_arm64 (may already be deleted or in use)"
+              echo "✅ Temporary tags cleaned up"
+            else
+              echo "⚠️  Keeping temporary tags for manual manifest list creation:"
+              echo "   - $temp_amd64"
+              echo "   - $temp_arm64"
+            fi
           done
         done
 
