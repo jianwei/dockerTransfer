@@ -160,16 +160,32 @@ jobs:
                 else
                   image_name="$source_image"
                 fi
-                # 使用 digest 复制特定架构
-                if skopeo copy \
+                # 使用 digest 复制特定架构（添加超时处理）
+                echo "   Source: docker://${image_name}@${arm64_digest}"
+                echo "   Target: docker://$temp_arm64"
+                echo "   Starting copy with timeout (this may take a while for large images)..."
+                
+                # 使用 timeout 命令设置超时（30分钟）
+                if timeout 1800 skopeo copy \
                   --src-tls-verify=false \
                   --dest-tls-verify=false \
                   --retry-times 5 \
                   "docker://${image_name}@${arm64_digest}" \
-                  "docker://$temp_arm64"; then
+                  "docker://$temp_arm64" 2>&1; then
                   arm64_copied=true
                   echo "✅ arm64 version copied successfully (from multi-arch manifest)"
+                else
+                  copy_exit_code=$?
+                  if [ $copy_exit_code -eq 124 ]; then
+                    echo "⏱️  arm64 copy timed out after 30 minutes"
+                  else
+                    echo "❌ arm64 copy failed with exit code: $copy_exit_code"
+                  fi
+                  arm64_copied=false
                 fi
+              else
+                echo "⚠️  No arm64 architecture found in multi-arch manifest"
+                arm64_copied=false
               fi
             fi
             
@@ -179,18 +195,22 @@ jobs:
               echo "   Source: docker://$source_image"
               echo "   Target: docker://$temp_arm64"
               
-              # 执行复制并捕获退出码
-              skopeo copy \
+              # 执行复制并捕获退出码（添加超时处理）
+              echo "   Starting copy with timeout (this may take a while for large images)..."
+              timeout 1800 skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://$source_image" \
-                "docker://$temp_arm64"
+                "docker://$temp_arm64" 2>&1
               copy_exit_code=$?
               
               echo "📋 Copy command exit code: $copy_exit_code"
               
-              if [ $copy_exit_code -eq 0 ]; then
+              if [ $copy_exit_code -eq 124 ]; then
+                echo "⏱️  Copy timed out after 30 minutes"
+                arm64_copied=false
+              elif [ $copy_exit_code -eq 0 ]; then
                 echo "📋 Copy command completed successfully, verifying architecture..."
                 # 验证架构
                 copied_arch=$(skopeo inspect "docker://$temp_arm64" 2>/dev/null | jq -r '.Architecture // "unknown"')
@@ -219,6 +239,19 @@ jobs:
             echo "   arm64: $arm64_copied"
             echo "=========================================="
             echo ""
+            
+            # 强制检查：确保至少 amd64 已复制（因为它是必需的）
+            if [ "$amd64_copied" = "false" ]; then
+              echo "❌ CRITICAL: amd64 copy failed, cannot proceed"
+              echo "⚠️  Checking if amd64 image exists at temporary location..."
+              if skopeo inspect "docker://$temp_amd64" >/dev/null 2>&1; then
+                echo "✅ amd64 image exists at $temp_amd64, marking as copied"
+                amd64_copied=true
+              else
+                echo "❌ amd64 image does not exist, skipping this image"
+                continue
+              fi
+            fi
             
             # 如果两个架构都没有成功，跳过
             if [ "$amd64_copied" = "false" ] && [ "$arm64_copied" = "false" ]; then
