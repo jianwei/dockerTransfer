@@ -40,6 +40,7 @@ jobs:
 
     - name: Process images
       run: |
+        set +e  # 不要因为错误而退出，我们需要处理错误
         echo "=== Starting image processing ==="
         
         # Read the JSON file directly in the shell
@@ -175,13 +176,22 @@ jobs:
             # 如果不是多架构镜像或上述方法失败，尝试直接复制
             if [ "$arm64_copied" = "false" ]; then
               echo "📥 Attempting direct copy for arm64..."
-              if skopeo copy \
+              echo "   Source: docker://$source_image"
+              echo "   Target: docker://$temp_arm64"
+              
+              # 执行复制并捕获退出码
+              skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://$source_image" \
-                "docker://$temp_arm64"; then
-                echo "📋 Copy command completed, verifying architecture..."
+                "docker://$temp_arm64"
+              copy_exit_code=$?
+              
+              echo "📋 Copy command exit code: $copy_exit_code"
+              
+              if [ $copy_exit_code -eq 0 ]; then
+                echo "📋 Copy command completed successfully, verifying architecture..."
                 # 验证架构
                 copied_arch=$(skopeo inspect "docker://$temp_arm64" 2>/dev/null | jq -r '.Architecture // "unknown"')
                 echo "📊 Detected architecture: $copied_arch"
@@ -195,15 +205,20 @@ jobs:
                   arm64_copied=true
                 fi
               else
-                echo "❌ Failed to copy arm64 version"
-                continue
+                echo "❌ Failed to copy arm64 version (exit code: $copy_exit_code)"
+                echo "⚠️  Will continue with amd64 only if available"
+                arm64_copied=false
               fi
             fi
             
             # 检查哪些架构成功复制
+            echo ""
+            echo "=========================================="
             echo "📊 Copy status summary:"
             echo "   amd64: $amd64_copied"
             echo "   arm64: $arm64_copied"
+            echo "=========================================="
+            echo ""
             
             # 如果两个架构都没有成功，跳过
             if [ "$amd64_copied" = "false" ] && [ "$arm64_copied" = "false" ]; then
@@ -214,6 +229,9 @@ jobs:
             # 如果只有一个架构成功，直接复制到最终目标（不需要 manifest list）
             if [ "$amd64_copied" = "true" ] && [ "$arm64_copied" = "false" ]; then
               echo "⚠️  Only amd64 architecture available, copying directly to final target..."
+              echo "   Source: docker://$temp_amd64"
+              echo "   Target: docker://$final_target"
+              
               if skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
@@ -221,17 +239,30 @@ jobs:
                 "docker://$temp_amd64" \
                 "docker://$final_target"; then
                 echo "✅ Single-arch (amd64) image pushed successfully: $final_target"
+                
+                # 验证最终镜像
+                echo "🔍 Verifying final image..."
+                if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
+                  echo "✅ Final image verified successfully"
+                else
+                  echo "⚠️  Warning: Final image verification failed"
+                fi
+                
                 # 清理临时标签
                 skopeo delete "docker://$temp_amd64" 2>/dev/null || true
                 continue
               else
                 echo "❌ Failed to copy single-arch image to final target"
+                echo "⚠️  Temporary image still available at: $temp_amd64"
                 continue
               fi
             fi
             
             if [ "$amd64_copied" = "false" ] && [ "$arm64_copied" = "true" ]; then
               echo "⚠️  Only arm64 architecture available, copying directly to final target..."
+              echo "   Source: docker://$temp_arm64"
+              echo "   Target: docker://$final_target"
+              
               if skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
@@ -239,11 +270,21 @@ jobs:
                 "docker://$temp_arm64" \
                 "docker://$final_target"; then
                 echo "✅ Single-arch (arm64) image pushed successfully: $final_target"
+                
+                # 验证最终镜像
+                echo "🔍 Verifying final image..."
+                if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
+                  echo "✅ Final image verified successfully"
+                else
+                  echo "⚠️  Warning: Final image verification failed"
+                fi
+                
                 # 清理临时标签
                 skopeo delete "docker://$temp_arm64" 2>/dev/null || true
                 continue
               else
                 echo "❌ Failed to copy single-arch image to final target"
+                echo "⚠️  Temporary image still available at: $temp_arm64"
                 continue
               fi
             fi
