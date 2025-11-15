@@ -1,12 +1,14 @@
-name: Sync Large Image to Aliyun
+name: Sync images
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
 
 jobs:
-  sync-large-image:
+  sync-images:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     
     steps:
     - name: Checkout
@@ -19,7 +21,7 @@ jobs:
         
         # 安装必要工具
         sudo apt-get update
-        sudo apt-get install -y skopeo jq
+        sudo apt-get install -y jq
         
         # 最大程度清理空间
         echo "🧹 Cleaning up disk space..."
@@ -30,46 +32,143 @@ jobs:
         echo "=== Disk space after cleanup ==="
         df -h
 
-    - name: Login to Aliyun
-      run: |
-        skopeo login \
-          --username "${{ secrets.ALIYUN_USERNAME }}" \
-          --password "${{ secrets.ALIYUN_PASSWORD }}" \
-          registry.cn-hangzhou.aliyuncs.com
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-    - name: Sync image with skopeo
+    - name: Login to Alibaba Cloud Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: registry.cn-hangzhou.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
+
+    - name: Process images
       run: |
-        echo "=== Starting image sync ==="
+        echo "=== Starting image processing ==="
         
-        SOURCE="vllm/vllm-openai:v0.11.0"
-        TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
+        # Read the JSON file directly in the shell
+        count=$(jq 'length' images.json)
+        echo "Found $count images to process"
         
-        echo "Source: $SOURCE"
-        echo "Target: $TARGET"
-        
-        # 使用 skopeo 直接复制（不占用本地磁盘）
-        if skopeo copy \
-          --src-tls-verify=false \
-          --dest-tls-verify=false \
-          --retry-times 5 \
-          --debug \
-          "docker://$SOURCE" \
-          "docker://$TARGET"; then
+        # Simple loop with proper error handling
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1)) ==="
           
-          echo "🎉 SUCCESS: Image synced to Aliyun!"
-        else
-          echo "❌ FAILED: Sync failed"
-          exit 1
-        fi
+          # Extract values one by one with error checking
+          source=$(jq -r ".[$i].source" images.json)
+          target=$(jq -r ".[$i].target" images.json)
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          
+          echo "Source: $source"
+          echo "Target: $target"
+          echo "Tag count: $tag_count"
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # Process tags - create multi-arch manifest
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images.json)
+            echo "🏷️  Processing tag: $tag"
+            
+            # 构建最终目标镜像名称
+            final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}"
+            
+            # 临时镜像标签，用于构建多架构 manifest
+            temp_amd64="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-amd64-temp"
+            temp_arm64="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-arm64-temp"
+            
+            # 确定源镜像名称：如果 source 已包含标签则直接使用，否则添加 tag
+            if echo "$source" | grep -q ":"; then
+              source_image="$source"
+            else
+              source_image="${source}:${tag}"
+            fi
+            
+            # 拉取并推送 amd64 版本到临时标签
+            echo "📥 Pulling $source_image for amd64..."
+            pulled_amd64_image=""
+            if docker pull --platform linux/amd64 "$source_image"; then
+              echo "✅ amd64 pull successful"
+              # 获取拉取后的镜像ID或名称
+              pulled_amd64_image=$(docker images --format "{{.Repository}}:{{.Tag}}" --filter "reference=$source_image" | head -n1)
+              if [ -z "$pulled_amd64_image" ]; then
+                pulled_amd64_image="$source_image"
+              fi
+              echo "📦 Tagging as $temp_amd64"
+              if docker tag "$pulled_amd64_image" "$temp_amd64"; then
+                echo "📤 Pushing amd64 to temporary tag..."
+                if docker push "$temp_amd64"; then
+                  echo "✅ amd64 version pushed successfully"
+                else
+                  echo "❌ Failed to push amd64 version"
+                  docker rmi "$pulled_amd64_image" "$temp_amd64" 2>/dev/null || true
+                  continue
+                fi
+              else
+                echo "❌ Failed to tag amd64 version"
+                docker rmi "$pulled_amd64_image" 2>/dev/null || true
+                continue
+              fi
+              # Clean up local amd64 image
+              docker rmi "$pulled_amd64_image" 2>/dev/null || true
+            else
+              echo "❌ Failed to pull amd64 version"
+              continue
+            fi
+            
+            # 拉取并推送 arm64 版本到临时标签
+            echo "📥 Pulling $source_image for arm64..."
+            pulled_arm64_image=""
+            if docker pull --platform linux/arm64 "$source_image"; then
+              echo "✅ arm64 pull successful"
+              # 获取拉取后的镜像ID或名称
+              pulled_arm64_image=$(docker images --format "{{.Repository}}:{{.Tag}}" --filter "reference=$source_image" | head -n1)
+              if [ -z "$pulled_arm64_image" ]; then
+                pulled_arm64_image="$source_image"
+              fi
+              echo "📦 Tagging as $temp_arm64"
+              if docker tag "$pulled_arm64_image" "$temp_arm64"; then
+                echo "📤 Pushing arm64 to temporary tag..."
+                if docker push "$temp_arm64"; then
+                  echo "✅ arm64 version pushed successfully"
+                else
+                  echo "❌ Failed to push arm64 version"
+                  docker rmi "$pulled_arm64_image" "$temp_arm64" 2>/dev/null || true
+                  continue
+                fi
+              else
+                echo "❌ Failed to tag arm64 version"
+                docker rmi "$pulled_arm64_image" 2>/dev/null || true
+                continue
+              fi
+              # Clean up local arm64 image
+              docker rmi "$pulled_arm64_image" 2>/dev/null || true
+            else
+              echo "❌ Failed to pull arm64 version"
+              continue
+            fi
+            
+            # 使用 buildx imagetools 创建多架构 manifest
+            echo "🔗 Creating multi-arch manifest for $final_target"
+            if docker buildx imagetools create -t "$final_target" "$temp_amd64" "$temp_arm64"; then
+              echo "✅ Multi-arch manifest created successfully: $final_target"
+            else
+              echo "❌ Failed to create multi-arch manifest"
+            fi
+            
+            # 清理临时镜像标签（可选，保留它们也不影响使用）
+            echo "🧹 Cleaning up temporary tags..."
+            docker buildx imagetools rm "$temp_amd64" 2>/dev/null || true
+            docker buildx imagetools rm "$temp_arm64" 2>/dev/null || true
+          done
+        done
 
-    - name: Verify sync
+    - name: Summary
+      if: always()
       run: |
-        echo "=== Verifying sync ==="
-        TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
-        
-        if skopeo inspect "docker://$TARGET" > /dev/null 2>&1; then
-          echo "✅ VERIFIED: Image exists in Aliyun"
-          skopeo inspect "docker://$TARGET" | jq '.Name, .Digest'
-        else
-          echo "❌ Image not found in Aliyun"
-        fi
+        echo "🏁 Processing completed"
+        echo "=== Final Docker images ==="
+        docker images | grep "${{ secrets.ALIYUN_NAMESPACE }}" || echo "No pushed images found"
