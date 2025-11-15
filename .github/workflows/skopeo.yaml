@@ -508,16 +508,22 @@ jobs:
             # 清理临时文件
             rm -f /tmp/manifest-list.json
             
-            # 只有在 manifest list 创建成功后才清理临时镜像标签
-            # 注意：即使删除临时标签，manifest list 仍然有效，因为它引用的是 digest
-            # 但为了安全起见，我们只在成功创建 manifest list 后才删除
+            # 注意：manifest list 引用的是 manifest 的 digest，而不是标签
+            # 只要 manifest 和相关的 blob 还在，即使删除标签，manifest list 也能正常工作
+            # 但是，为了安全起见，我们保留临时标签，因为它们占用的空间很小（只是标签引用）
+            # 如果确实需要清理，可以使用 registry 的垃圾回收功能
             if [ "$manifest_created" = "true" ]; then
-              echo "🧹 Cleaning up temporary tags (manifest list created successfully)..."
-              # 等待一小段时间确保 manifest list 已完全创建
-              sleep 2
-              skopeo delete "docker://$temp_amd64" 2>/dev/null || echo "⚠️  Failed to delete $temp_amd64 (may already be deleted or in use)"
-              skopeo delete "docker://$temp_arm64" 2>/dev/null || echo "⚠️  Failed to delete $temp_arm64 (may already be deleted or in use)"
-              echo "✅ Temporary tags cleaned up"
+              echo "✅ Multi-arch manifest list created successfully"
+              echo "📝 Note: Temporary tags are kept to ensure manifest list references remain valid"
+              echo "   - $temp_amd64"
+              echo "   - $temp_arm64"
+              echo "💡 These tags can be manually deleted later if needed, but keeping them is safe"
+              
+              # 可选：如果确实需要清理临时标签，取消下面的注释
+              # echo "🧹 Cleaning up temporary tags..."
+              # sleep 5  # 等待确保 manifest list 已完全创建
+              # skopeo delete "docker://$temp_amd64" 2>/dev/null || echo "⚠️  Failed to delete $temp_amd64"
+              # skopeo delete "docker://$temp_arm64" 2>/dev/null || echo "⚠️  Failed to delete $temp_arm64"
             else
               echo "⚠️  Keeping temporary tags for manual manifest list creation:"
               echo "   - $temp_amd64"
