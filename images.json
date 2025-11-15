@@ -5,7 +5,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "nginx:latest",
@@ -13,7 +16,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "alpine:latest",
@@ -21,7 +27,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "ubuntu:latest",
@@ -29,7 +38,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "redis:8.0.2",
@@ -37,7 +49,10 @@
         "tags": [
             "8.0.2"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mysql:8.0",
@@ -45,7 +60,10 @@
         "tags": [
             "8.0"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "openresty/openresty:latest",
@@ -53,7 +71,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "phpmyadmin:5.2.3",
@@ -61,7 +82,10 @@
         "tags": [
             "5.2.3"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "ghcr.io/open-webui/open-webui:main",
@@ -69,7 +93,10 @@
         "tags": [
             "main"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "nvidia/cuda:12.0.0-base-ubuntu22.04",
@@ -77,7 +104,10 @@
         "tags": [
             "12.0.0-base-ubuntu22.04"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "nvidia/cuda:12.4.0-runtime-ubuntu22.04",
@@ -85,7 +115,10 @@
         "tags": [
             "12.4.0-runtime-ubuntu22.04"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "n8nio/n8n:1.120.2",
@@ -93,7 +126,10 @@
         "tags": [
             "1.120.2"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "linuxserver/code-server:4.105.1",
@@ -101,7 +137,10 @@
         "tags": [
             "4.105.1"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mcp/sequentialthinking:latest",
@@ -109,7 +148,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mcp/fetch:latest",
@@ -117,7 +159,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mcp/context7:latest",
@@ -125,7 +170,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mcp/playwright:latest",
@@ -133,7 +181,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "mcp/firecrawl:latest",
@@ -141,7 +192,10 @@
         "tags": [
             "latest"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     },
     {
         "source": "vllm/vllm-openai:v0.11.0",
@@ -149,6 +203,9 @@
         "tags": [
             "v0.11.0"
         ],
-        "architectures": ["amd64", "arm64"]
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     }
 ]
