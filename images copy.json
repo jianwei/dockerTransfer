@@ -1,0 +1,146 @@
+[
+    {
+        "source": "centos:latest",
+        "target": "centos",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "nginx:latest",
+        "target": "nginx",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "alpine:latest",
+        "target": "alpine",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "ubuntu:latest",
+        "target": "ubuntu",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "redis:8.0.2",
+        "target": "redis",
+        "tags": [
+            "8.0.2"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mysql:8.0",
+        "target": "mysql",
+        "tags": [
+            "8.0"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "openresty/openresty:latest",
+        "target": "openresty",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "phpmyadmin:5.2.3",
+        "target": "phpmyadmin",
+        "tags": [
+            "5.2.3"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "ghcr.io/open-webui/open-webui:main",
+        "target": "open-webui",
+        "tags": [
+            "main"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "nvidia/cuda:12.0.0-base-ubuntu22.04",
+        "target": "nvidia-cuda",
+        "tags": [
+            "12.0.0-base-ubuntu22.04"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "n8nio/n8n:1.120.2",
+        "target": "n8n",
+        "tags": [
+            "1.120.2"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "linuxserver/code-server:4.105.1",
+        "target": "code-server",
+        "tags": [
+            "4.105.1"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/sequentialthinking:latest",
+        "target": "sequentialthinking",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/fetch:latest",
+        "target": "fetch",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/context7:latest",
+        "target": "context7",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/playwright:latest",
+        "target": "playwright",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "mcp/firecrawl:latest",
+        "target": "firecrawl",
+        "tags": [
+            "latest"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
+        "source": "vllm/vllm-openai:v0.11.0",
+        "target": "vllm-openai",
+        "tags": [
+            "v0.11.0"
+        ],
+        "architectures": ["amd64", "arm64"]
+    }
+]
