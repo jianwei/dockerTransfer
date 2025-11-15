@@ -134,13 +134,5 @@
             "latest"
         ],
         "architectures": ["amd64", "arm64"]
-    },
-    {
-        "source": "vllm/vllm-openai:v0.9.2",
-        "target": "vllm-openai",
-        "tags": [
-            "v0.9.2"
-        ],
-        "architectures": ["amd64", "arm64"]
     }
 ]
