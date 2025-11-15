@@ -1,11 +1,12 @@
-name: Debug Image Sync
+name: Fix Image Sync to Aliyun
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug-sync:
+  sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout
@@ -18,42 +19,43 @@ jobs:
         username: ${{ secrets.ALIYUN_USERNAME }}
         password: ${{ secrets.ALIYUN_PASSWORD }}
 
-    - name: Debug info
+    - name: Sync vllm image
       run: |
-        echo "=== System Info ==="
-        echo "Disk space:"
-        df -h
-        echo "Docker info:"
-        docker system df
+        echo "=== Starting sync ==="
         
-    - name: Method 1 - Skopeo with auth
-      run: |
-        echo "=== Method 1: Skopeo with authentication ==="
         SOURCE="vllm/vllm-openai:v0.11.0"
         TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
         
-        # 使用认证信息
-        skopeo copy \
-          --dest-creds="${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" \
-          --src-tls-verify=false \
-          --dest-tls-verify=false \
-          --retry-times 2 \
-          "docker://$SOURCE" \
-          "docker://$TARGET"
-          
-    - name: Method 2 - Docker buildx
-      if: failure()
+        echo "Source: $SOURCE"
+        echo "Target: $TARGET"
+        
+        # 清理空间
+        docker system prune -f
+        
+        # 拉取镜像
+        echo "📥 Pulling source image..."
+        docker pull "$SOURCE"
+        
+        # 标记镜像
+        echo "🏷️ Tagging image..."
+        docker tag "$SOURCE" "$TARGET"
+        
+        # 推送镜像
+        echo "📤 Pushing to Aliyun..."
+        docker push "$TARGET"
+        
+        echo "✅ Push command completed"
+        
+    - name: Verify sync
       run: |
-        echo "=== Method 2: Docker Buildx ==="
-        docker buildx create --use
-        docker buildx imagetools create \
-          --tag registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0 \
-          vllm/vllm-openai:v0.11.0
-
-    - name: Final verification
-      run: |
-        echo "=== Final Check ==="
-        # 列出阿里云仓库中的所有镜像
-        echo "Images in namespace:"
-        curl -s -u "${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" \
-          "https://registry.cn-hangzhou.aliyuncs.com/v2/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai/tags/list" | jq .
+        echo "=== Verification ==="
+        TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
+        
+        echo "Checking: $TARGET"
+        if docker pull "$TARGET"; then
+          echo "🎉 SUCCESS: Image is now in Aliyun!"
+          echo "Image details:"
+          docker images "$TARGET"
+        else
+          echo "❌ FAILED: Image not found in Aliyun"
+        fi
