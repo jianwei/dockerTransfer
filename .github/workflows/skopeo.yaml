@@ -20,13 +20,44 @@ jobs:
         
         # 安装必要工具
         sudo apt-get update
-        sudo apt-get install -y skopeo jq
+        sudo apt-get install -y skopeo jq wget
         
         # 安装 manifest-tool 用于创建多架构 manifest
-        MANIFEST_TOOL_VERSION="2.0.8"
-        wget -q "https://github.com/estesp/manifest-tool/releases/download/v${MANIFEST_TOOL_VERSION}/manifest-tool-linux-amd64" -O /tmp/manifest-tool
+        echo "📥 Downloading manifest-tool..."
+        # 尝试多个可能的下载链接
+        MANIFEST_TOOL_URL="https://github.com/estesp/manifest-tool/releases/download/v2.0.8/manifest-tool-linux-amd64"
+        echo "Download URL: $MANIFEST_TOOL_URL"
+        if ! wget --timeout=30 --tries=3 "$MANIFEST_TOOL_URL" -O /tmp/manifest-tool; then
+          echo "❌ wget failed, trying with curl..."
+          # 尝试使用 curl 作为备选
+          if command -v curl >/dev/null 2>&1; then
+            if ! curl -L -f -o /tmp/manifest-tool "$MANIFEST_TOOL_URL"; then
+              echo "❌ Failed to download manifest-tool with curl"
+              exit 1
+            fi
+          else
+            echo "❌ Neither wget nor curl available"
+            exit 1
+          fi
+        fi
+        
+        # 验证文件是否下载成功
+        if [ ! -f /tmp/manifest-tool ] || [ ! -s /tmp/manifest-tool ]; then
+          echo "❌ Downloaded file is empty or missing"
+          exit 1
+        fi
+        
         chmod +x /tmp/manifest-tool
         sudo mv /tmp/manifest-tool /usr/local/bin/manifest-tool
+        
+        # 验证安装
+        if command -v manifest-tool >/dev/null 2>&1; then
+          echo "✅ manifest-tool installed successfully"
+          manifest-tool --version 2>&1 || echo "⚠️  manifest-tool version check failed (but binary exists)"
+        else
+          echo "❌ manifest-tool not found in PATH after installation"
+          exit 1
+        fi
         
         # 清理空间
         echo "🧹 Cleaning up disk space..."
