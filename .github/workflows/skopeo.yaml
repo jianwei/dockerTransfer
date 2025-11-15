@@ -8,6 +8,7 @@ on:
 jobs:
   sync-images:
     runs-on: ubuntu-latest
+    timeout-minutes: 120  # 设置 2 小时超时
     
     steps:
     - name: Checkout
@@ -41,7 +42,10 @@ jobs:
     - name: Process images
       run: |
         set +e  # 不要因为错误而退出，我们需要处理错误
+        set -x  # 显示所有执行的命令（用于调试）
         echo "=== Starting image processing ==="
+        echo "Current time: $(date)"
+        echo "Working directory: $(pwd)"
         
         # Read the JSON file directly in the shell
         count=$(jq 'length' images.json)
@@ -104,14 +108,26 @@ jobs:
                   image_name="$source_image"
                 fi
                 # 使用 digest 复制特定架构
-                if skopeo copy \
+                echo "   Source: docker://${image_name}@${amd64_digest}"
+                echo "   Target: docker://$temp_amd64"
+                echo "   Starting copy (this may take a while for large images)..."
+                
+                if timeout 3600 skopeo copy \
                   --src-tls-verify=false \
                   --dest-tls-verify=false \
                   --retry-times 5 \
                   "docker://${image_name}@${amd64_digest}" \
-                  "docker://$temp_amd64"; then
+                  "docker://$temp_amd64" 2>&1; then
                   amd64_copied=true
                   echo "✅ amd64 version copied successfully (from multi-arch manifest)"
+                else
+                  copy_exit_code=$?
+                  if [ $copy_exit_code -eq 124 ]; then
+                    echo "⏱️  amd64 copy timed out after 60 minutes"
+                  else
+                    echo "❌ amd64 copy failed with exit code: $copy_exit_code"
+                  fi
+                  amd64_copied=false
                 fi
               fi
             fi
@@ -119,12 +135,24 @@ jobs:
             # 如果不是多架构镜像或上述方法失败，尝试直接复制
             if [ "$amd64_copied" = "false" ]; then
               echo "📥 Attempting direct copy for amd64..."
-              if skopeo copy \
+              echo "   Source: docker://$source_image"
+              echo "   Target: docker://$temp_amd64"
+              echo "   Starting copy (this may take a while for large images)..."
+              
+              timeout 3600 skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://$source_image" \
-                "docker://$temp_amd64"; then
+                "docker://$temp_amd64" 2>&1
+              copy_exit_code=$?
+              
+              echo "📋 Copy command exit code: $copy_exit_code"
+              
+              if [ $copy_exit_code -eq 124 ]; then
+                echo "⏱️  Copy timed out after 60 minutes"
+                amd64_copied=false
+              elif [ $copy_exit_code -eq 0 ]; then
                 echo "📋 Copy command completed, verifying architecture..."
                 # 验证架构
                 copied_arch=$(skopeo inspect "docker://$temp_amd64" 2>/dev/null | jq -r '.Architecture // "unknown"')
@@ -139,8 +167,8 @@ jobs:
                   amd64_copied=true
                 fi
               else
-                echo "❌ Failed to copy amd64 version"
-                continue
+                echo "❌ Failed to copy amd64 version (exit code: $copy_exit_code)"
+                amd64_copied=false
               fi
             fi
             
@@ -264,13 +292,15 @@ jobs:
               echo "⚠️  Only amd64 architecture available, copying directly to final target..."
               echo "   Source: docker://$temp_amd64"
               echo "   Target: docker://$final_target"
+              echo "   Current time: $(date)"
               
-              if skopeo copy \
+              echo "📤 Pushing amd64 image to final target..."
+              if timeout 1800 skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://$temp_amd64" \
-                "docker://$final_target"; then
+                "docker://$final_target" 2>&1; then
                 echo "✅ Single-arch (amd64) image pushed successfully: $final_target"
                 
                 # 验证最终镜像
