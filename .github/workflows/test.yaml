@@ -1,27 +1,45 @@
-name: Fix Image Sync to Aliyun
+name: Sync Large Image to Aliyun
 
 on:
   workflow_dispatch:
 
 jobs:
-  sync:
+  sync-large-image:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Login to Aliyun
-      uses: docker/login-action@v3
-      with:
-        registry: registry.cn-hangzhou.aliyuncs.com
-        username: ${{ secrets.ALIYUN_USERNAME }}
-        password: ${{ secrets.ALIYUN_PASSWORD }}
-
-    - name: Sync vllm image
+    - name: Setup and cleanup
       run: |
-        echo "=== Starting sync ==="
+        echo "=== Initial disk space ==="
+        df -h
+        
+        # 安装必要工具
+        sudo apt-get update
+        sudo apt-get install -y skopeo jq
+        
+        # 最大程度清理空间
+        echo "🧹 Cleaning up disk space..."
+        sudo docker system prune -af || true
+        sudo rm -rf /usr/local/lib/android/sdk/extras || true
+        sudo rm -rf /usr/share/dotnet/sdk/NuGetFallbackFolder || true
+        
+        echo "=== Disk space after cleanup ==="
+        df -h
+
+    - name: Login to Aliyun
+      run: |
+        skopeo login \
+          --username "${{ secrets.ALIYUN_USERNAME }}" \
+          --password "${{ secrets.ALIYUN_PASSWORD }}" \
+          registry.cn-hangzhou.aliyuncs.com
+
+    - name: Sync image with skopeo
+      run: |
+        echo "=== Starting image sync ==="
         
         SOURCE="vllm/vllm-openai:v0.11.0"
         TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
@@ -29,33 +47,29 @@ jobs:
         echo "Source: $SOURCE"
         echo "Target: $TARGET"
         
-        # 清理空间
-        docker system prune -f
-        
-        # 拉取镜像
-        echo "📥 Pulling source image..."
-        docker pull "$SOURCE"
-        
-        # 标记镜像
-        echo "🏷️ Tagging image..."
-        docker tag "$SOURCE" "$TARGET"
-        
-        # 推送镜像
-        echo "📤 Pushing to Aliyun..."
-        docker push "$TARGET"
-        
-        echo "✅ Push command completed"
-        
+        # 使用 skopeo 直接复制（不占用本地磁盘）
+        if skopeo copy \
+          --src-tls-verify=false \
+          --dest-tls-verify=false \
+          --retry-times 5 \
+          --debug \
+          "docker://$SOURCE" \
+          "docker://$TARGET"; then
+          
+          echo "🎉 SUCCESS: Image synced to Aliyun!"
+        else
+          echo "❌ FAILED: Sync failed"
+          exit 1
+        fi
+
     - name: Verify sync
       run: |
-        echo "=== Verification ==="
+        echo "=== Verifying sync ==="
         TARGET="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/vllm-openai:v0.11.0"
         
-        echo "Checking: $TARGET"
-        if docker pull "$TARGET"; then
-          echo "🎉 SUCCESS: Image is now in Aliyun!"
-          echo "Image details:"
-          docker images "$TARGET"
+        if skopeo inspect "docker://$TARGET" > /dev/null 2>&1; then
+          echo "✅ VERIFIED: Image exists in Aliyun"
+          skopeo inspect "docker://$TARGET" | jq '.Name, .Digest'
         else
-          echo "❌ FAILED: Image not found in Aliyun"
+          echo "❌ Image not found in Aliyun"
         fi
