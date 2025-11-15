@@ -1,4 +1,4 @@
-name: Sync skopeo
+name: Sync Image to Aliyun With skopeo
 
 on:
   workflow_dispatch:
