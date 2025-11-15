@@ -1,0 +1,242 @@
+name: Sync skopeo
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-images:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup and install dependencies
+      run: |
+        echo "=== Initial disk space ==="
+        df -h
+        
+        # 安装必要工具
+        sudo apt-get update
+        sudo apt-get install -y skopeo jq
+        
+        # 安装 manifest-tool 用于创建多架构 manifest
+        MANIFEST_TOOL_VERSION="2.0.8"
+        wget -q "https://github.com/estesp/manifest-tool/releases/download/v${MANIFEST_TOOL_VERSION}/manifest-tool-linux-amd64" -O /tmp/manifest-tool
+        chmod +x /tmp/manifest-tool
+        sudo mv /tmp/manifest-tool /usr/local/bin/manifest-tool
+        
+        # 清理空间
+        echo "🧹 Cleaning up disk space..."
+        sudo docker system prune -af || true
+        
+        echo "=== Disk space after cleanup ==="
+        df -h
+
+    - name: Login to Alibaba Cloud Container Registry
+      run: |
+        skopeo login \
+          --username "${{ secrets.ALIYUN_USERNAME }}" \
+          --password "${{ secrets.ALIYUN_PASSWORD }}" \
+          registry.cn-hangzhou.aliyuncs.com
+
+    - name: Process images
+      run: |
+        echo "=== Starting image processing ==="
+        
+        # Read the JSON file directly in the shell
+        count=$(jq 'length' images.json)
+        echo "Found $count images to process"
+        
+        # Simple loop with proper error handling
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1)) ==="
+          
+          # Extract values one by one with error checking
+          source=$(jq -r ".[$i].source" images.json)
+          target=$(jq -r ".[$i].target" images.json)
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          
+          echo "Source: $source"
+          echo "Target: $target"
+          echo "Tag count: $tag_count"
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # Process tags - create multi-arch manifest
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images.json)
+            echo "🏷️  Processing tag: $tag"
+            
+            # 构建最终目标镜像名称
+            final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}"
+            
+            # 临时镜像标签，用于构建多架构 manifest
+            temp_amd64="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-amd64-temp"
+            temp_arm64="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-arm64-temp"
+            
+            # 确定源镜像名称：如果 source 已包含标签则直接使用，否则添加 tag
+            if echo "$source" | grep -q ":"; then
+              source_image="$source"
+            else
+              source_image="${source}:${tag}"
+            fi
+            
+            # 检查源镜像的 manifest，判断是否是多架构镜像
+            source_manifest=$(skopeo inspect --raw "docker://$source_image" 2>/dev/null || echo "")
+            
+            # 使用 skopeo 复制 amd64 版本到临时标签
+            echo "📥 Copying $source_image for amd64..."
+            amd64_copied=false
+            
+            # 检查是否是多架构镜像
+            if echo "$source_manifest" | jq -e '.manifests' > /dev/null 2>&1; then
+              # 是多架构镜像，获取 amd64 架构的 digest
+              amd64_digest=$(echo "$source_manifest" | jq -r '.manifests[] | select(.platform.architecture == "amd64" and .platform.os == "linux") | .digest' | head -n1)
+              if [ -n "$amd64_digest" ] && [ "$amd64_digest" != "null" ]; then
+                # 提取镜像名称（去掉标签，保留仓库地址）
+                # 如果 source_image 包含标签，去掉标签部分
+                if echo "$source_image" | grep -q ":"; then
+                  image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
+                else
+                  image_name="$source_image"
+                fi
+                # 使用 digest 复制特定架构
+                if skopeo copy \
+                  --src-tls-verify=false \
+                  --dest-tls-verify=false \
+                  --retry-times 5 \
+                  "docker://${image_name}@${amd64_digest}" \
+                  "docker://$temp_amd64"; then
+                  amd64_copied=true
+                  echo "✅ amd64 version copied successfully (from multi-arch manifest)"
+                fi
+              fi
+            fi
+            
+            # 如果不是多架构镜像或上述方法失败，尝试直接复制
+            if [ "$amd64_copied" = "false" ]; then
+              if skopeo copy \
+                --src-tls-verify=false \
+                --dest-tls-verify=false \
+                --retry-times 5 \
+                "docker://$source_image" \
+                "docker://$temp_amd64"; then
+                # 验证架构
+                copied_arch=$(skopeo inspect "docker://$temp_amd64" | jq -r '.Architecture // "unknown"')
+                if [ "$copied_arch" = "amd64" ]; then
+                  amd64_copied=true
+                  echo "✅ amd64 version copied successfully"
+                else
+                  echo "⚠️  Warning: Copied image architecture is $copied_arch, not amd64"
+                  echo "❌ Failed to copy amd64 version"
+                  continue
+                fi
+              else
+                echo "❌ Failed to copy amd64 version"
+                continue
+              fi
+            fi
+            
+            # 使用 skopeo 复制 arm64 版本到临时标签
+            echo "📥 Copying $source_image for arm64..."
+            arm64_copied=false
+            
+            # 检查是否是多架构镜像
+            if echo "$source_manifest" | jq -e '.manifests' > /dev/null 2>&1; then
+              # 是多架构镜像，获取 arm64 架构的 digest
+              arm64_digest=$(echo "$source_manifest" | jq -r '.manifests[] | select(.platform.architecture == "arm64" and .platform.os == "linux") | .digest' | head -n1)
+              if [ -n "$arm64_digest" ] && [ "$arm64_digest" != "null" ]; then
+                # 提取镜像名称（去掉标签，保留仓库地址）
+                # 如果 source_image 包含标签，去掉标签部分
+                if echo "$source_image" | grep -q ":"; then
+                  image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
+                else
+                  image_name="$source_image"
+                fi
+                # 使用 digest 复制特定架构
+                if skopeo copy \
+                  --src-tls-verify=false \
+                  --dest-tls-verify=false \
+                  --retry-times 5 \
+                  "docker://${image_name}@${arm64_digest}" \
+                  "docker://$temp_arm64"; then
+                  arm64_copied=true
+                  echo "✅ arm64 version copied successfully (from multi-arch manifest)"
+                fi
+              fi
+            fi
+            
+            # 如果不是多架构镜像或上述方法失败，尝试直接复制
+            if [ "$arm64_copied" = "false" ]; then
+              if skopeo copy \
+                --src-tls-verify=false \
+                --dest-tls-verify=false \
+                --retry-times 5 \
+                "docker://$source_image" \
+                "docker://$temp_arm64"; then
+                # 验证架构
+                copied_arch=$(skopeo inspect "docker://$temp_arm64" | jq -r '.Architecture // "unknown"')
+                if [ "$copied_arch" = "arm64" ]; then
+                  arm64_copied=true
+                  echo "✅ arm64 version copied successfully"
+                else
+                  echo "⚠️  Warning: Copied image architecture is $copied_arch, not arm64"
+                  echo "❌ Failed to copy arm64 version"
+                  continue
+                fi
+              else
+                echo "❌ Failed to copy arm64 version"
+                continue
+              fi
+            fi
+            
+            # 使用 manifest-tool 创建多架构 manifest
+            echo "🔗 Creating multi-arch manifest for $final_target"
+            
+            # 创建 manifest-tool 配置文件（使用 echo 逐行写入，避免 heredoc 问题）
+            {
+              echo "image: $final_target"
+              echo "manifests:"
+              echo "  - image: $temp_amd64"
+              echo "    platform:"
+              echo "      architecture: amd64"
+              echo "      os: linux"
+              echo "  - image: $temp_arm64"
+              echo "    platform:"
+              echo "      architecture: arm64"
+              echo "      os: linux"
+            } > /tmp/manifest.yaml
+            
+            # 使用 manifest-tool 推送多架构 manifest
+            # manifest-tool 会使用 skopeo login 设置的认证信息
+            if manifest-tool push from-spec /tmp/manifest.yaml \
+              --username "${{ secrets.ALIYUN_USERNAME }}" \
+              --password "${{ secrets.ALIYUN_PASSWORD }}"; then
+              echo "✅ Multi-arch manifest created successfully: $final_target"
+            else
+              echo "❌ Failed to create multi-arch manifest"
+              continue
+            fi
+            
+            # 清理临时配置文件
+            rm -f /tmp/manifest.yaml
+            
+            # 清理临时镜像标签（可选，保留它们也不影响使用）
+            echo "🧹 Cleaning up temporary tags..."
+            skopeo delete "docker://$temp_amd64" 2>/dev/null || true
+            skopeo delete "docker://$temp_arm64" 2>/dev/null || true
+          done
+        done
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Processing completed"
+        echo "=== Final disk space ==="
+        df -h
