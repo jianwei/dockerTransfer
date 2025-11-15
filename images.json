@@ -80,6 +80,14 @@
         "architectures": ["amd64", "arm64"]
     },
     {
+        "source": "nvidia/cuda:12.4.0-runtime-ubuntu22.04",
+        "target": "nvidia-cuda",
+        "tags": [
+            "12.4.0-runtime-ubuntu22.04"
+        ],
+        "architectures": ["amd64", "arm64"]
+    },
+    {
         "source": "n8nio/n8n:1.120.2",
         "target": "n8n",
         "tags": [
