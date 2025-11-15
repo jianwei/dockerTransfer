@@ -1,0 +1,183 @@
+name: Sync  Images to Alibaba 
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-images:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Configure Docker mirror for China
+      run: |
+        sudo mkdir -p /etc/docker
+        sudo tee /etc/docker/daemon.json <<EOF
+        {
+          "registry-mirrors": [
+            "https://docker.mirrors.ustc.edu.cn",
+            "https://mirror.ccs.tencentyun.com",
+            "https://hub-mirror.c.163.com"
+          ]
+        }
+        EOF
+        sudo systemctl restart docker
+
+    - name: Login to Alibaba Cloud Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: registry.cn-hangzhou.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq skopeo
+
+    - name: Process images with retry and fallback
+      run: |
+        echo "=== Starting image processing ==="
+        
+        count=$(jq 'length' images.json)
+        echo "Found $count images to process"
+        
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1)) ==="
+          
+          source=$(jq -r ".[$i].source" images.json)
+          target=$(jq -r ".[$i].target" images.json)
+          tag_count=$(jq ".[$i].tags | length" images.json)
+          
+          echo "Source: $source"
+          echo "Target: $target"
+          echo "Tag count: $tag_count"
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # Process tags
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images.json)
+            echo "🏷️  Processing tag: $tag"
+            
+            # 构建最终目标镜像名称
+            final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}"
+            
+            # 确定源镜像名称
+            if echo "$source" | grep -q ":"; then
+              source_image="$source"
+            else
+              source_image="${source}:${tag}"
+            fi
+            
+            echo "🔄 Processing: $source_image -> $final_target"
+            
+            # 方法1: 尝试使用 skopeo 直接复制（更可靠）
+            echo "🔄 Attempting direct copy with skopeo..."
+            if skopeo copy \
+              --src-tls-verify=false \
+              --dest-tls-verify=false \
+              --retry-times 3 \
+              "docker://$source_image" \
+              "docker://$final_target"; then
+              
+              echo "✅ Successfully copied using skopeo: $final_target"
+              continue
+            fi
+            
+            echo "❌ Skopeo copy failed, trying Docker pull method..."
+            
+            # 方法2: 使用 Docker pull（带重试）
+            platforms=("linux/amd64" "linux/arm64")
+            temp_tags=()
+            
+            for platform in "${platforms[@]}"; do
+              echo "📥 Pulling $source_image for $platform..."
+              arch_suffix=$(echo "$platform" | cut -d'/' -f2)
+              temp_tag="${final_target}-${arch_suffix}-temp"
+              temp_tags+=("$temp_tag")
+              
+              # 重试机制
+              for retry in {1..3}; do
+                if docker pull --platform "$platform" "$source_image"; then
+                  echo "✅ $platform pull successful (attempt $retry)"
+                  
+                  # 获取实际拉取的镜像
+                  pulled_image=$(docker images --format "{{.Repository}}:{{.Tag}}" --filter "reference=$source_image" | head -n1)
+                  if [ -z "$pulled_image" ]; then
+                    pulled_image="$source_image"
+                  fi
+                  
+                  # 标记并推送
+                  if docker tag "$pulled_image" "$temp_tag" && docker push "$temp_tag"; then
+                    echo "✅ $platform version pushed successfully"
+                    # 清理本地镜像
+                    docker rmi "$pulled_image" "$temp_tag" 2>/dev/null || true
+                    break
+                  else
+                    echo "❌ Failed to push $platform version"
+                    docker rmi "$pulled_image" "$temp_tag" 2>/dev/null || true
+                  fi
+                  break
+                else
+                  echo "❌ $platform pull failed (attempt $retry)"
+                  if [ $retry -lt 3 ]; then
+                    echo "⏳ Retrying in 10 seconds..."
+                    sleep 10
+                  fi
+                fi
+              done
+            done
+            
+            # 创建多架构 manifest（如果至少有一个架构成功）
+            echo "🔗 Attempting to create multi-arch manifest..."
+            available_tags=()
+            for temp_tag in "${temp_tags[@]}"; do
+              if docker manifest inspect "$temp_tag" >/dev/null 2>&1; then
+                available_tags+=("$temp_tag")
+              fi
+            done
+            
+            if [ ${#available_tags[@]} -gt 0 ]; then
+              if docker buildx imagetools create -t "$final_target" "${available_tags[@]}"; then
+                echo "✅ Multi-arch manifest created: $final_target"
+              else
+                echo "❌ Failed to create multi-arch manifest"
+              fi
+            else
+              echo "❌ No platform versions available for multi-arch manifest"
+            fi
+            
+            # 清理临时标签
+            for temp_tag in "${temp_tags[@]}"; do
+              docker buildx imagetools rm "$temp_tag" 2>/dev/null || true
+            done
+            
+          done
+        done
+
+    - name: Clean up Docker system
+      if: always()
+      run: |
+        echo "🧹 Cleaning up Docker system..."
+        docker system prune -f || true
+        docker image prune -f || true
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Image processing completed"
+        echo "=== Disk space status ==="
+        df -h
+        echo "=== Docker disk usage ==="
+        docker system df
