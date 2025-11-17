@@ -133,7 +133,7 @@
     },
     {
         "source": "mcp/sequentialthinking",
-        "target": "mcp/sequentialthinking",
+        "target": "sequentialthinking",
         "tags": [
             "latest"
         ],
@@ -144,7 +144,7 @@
     },
     {
         "source": "mcp/fetch",
-        "target": "mcp/fetch",
+        "target": "fetch",
         "tags": [
             "latest"
         ],
@@ -155,7 +155,7 @@
     },
     {
         "source": "mcp/context7",
-        "target": "mcp/context7",
+        "target": "context7",
         "tags": [
             "latest"
         ],
@@ -166,7 +166,7 @@
     },
     {
         "source": "mcp/playwright",
-        "target": "mcp/playwright",
+        "target": "playwright",
         "tags": [
             "latest"
         ],
@@ -177,7 +177,7 @@
     },
     {
         "source": "mcp/firecrawl",
-        "target": "mcp/firecrawl",
+        "target": "firecrawl",
         "tags": [
             "latest"
         ],
