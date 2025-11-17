@@ -83,13 +83,21 @@ dockerTransfer/
 ##### `source` (必填)
 
 - **类型**: 字符串
-- **说明**: 源镜像的完整地址，包括仓库和标签
-- **格式**: `仓库地址/镜像名称:标签` 或 `镜像名称:标签`
+- **说明**: 源镜像的地址，可以包含标签也可以不包含标签
+- **格式**: 
+  - `仓库地址/镜像名称:标签` - 包含标签的完整地址
+  - `仓库地址/镜像名称` - 不包含标签的镜像名称（标签由 `tags` 字段指定）
+  - `镜像名称:标签` - Docker Hub 官方镜像（包含标签）
+  - `镜像名称` - Docker Hub 官方镜像（不包含标签）
 - **示例**:
-  - `nginx:latest` - Docker Hub 官方镜像
-  - `vllm/vllm-openai:latest` - Docker Hub 用户仓库镜像
-  - `ghcr.io/open-webui/open-webui:main` - GitHub Container Registry 镜像
-  - `registry.example.com/nginx:1.21` - 私有仓库镜像
+  - `nginx` - Docker Hub 官方镜像（不包含标签，使用 tags 字段中的标签）
+  - `nginx:latest` - Docker Hub 官方镜像（包含标签）
+  - `openresty/openresty` - Docker Hub 用户仓库镜像（不包含标签）
+  - `ghcr.io/open-webui/open-webui` - GitHub Container Registry 镜像（不包含标签）
+  - `linuxserver/code-server:4.105.1` - Docker Hub 用户仓库镜像（包含标签）
+- **注意**: 
+  - 如果 `source` 包含标签（有 `:`），则直接使用该标签
+  - 如果 `source` 不包含标签，则使用 `tags` 数组中的每个标签来构建源镜像地址
 
 ##### `target` (必填)
 
@@ -107,10 +115,13 @@ dockerTransfer/
 - **格式**: 字符串数组，每个元素代表一个标签
 - **示例**:
   - `["latest"]` - 仅推送 latest 标签
-  - `["1.21", "latest"]` - 推送 1.21 和 latest 两个标签
-  - `["centos7.9.2009", "7.9.2009", "7", "latest"]` - 推送多个版本标签
+  - `["latest", "1.25.2"]` - 推送 latest 和 1.25.2 两个标签
+  - `["latest", "7.9.2009", "centos7", "7"]` - 推送多个版本标签
+  - `["v0.11.0", "latest", "v0.10.2", "v0.9.2"]` - 推送多个版本标签
 
 **注意**: 
+- 如果 `source` 不包含标签，工作流会使用 `tags` 数组中的每个标签来构建源镜像地址
+- 如果 `source` 已包含标签，`tags` 数组中的标签仅用于目标镜像的标签
 - 同一个源镜像可以被打上多个目标标签
 - 标签顺序不影响传输结果
 - 建议至少包含一个 `latest` 标签以便于使用
@@ -136,49 +147,77 @@ dockerTransfer/
 
 ### 配置示例
 
-#### 示例 1: 基础镜像同步
+#### 示例 1: 基础镜像同步（source 不包含标签）
 
 ```json
 {
-    "source": "nginx:latest",
+    "source": "nginx",
     "target": "nginx",
-    "tags": ["latest"],
+    "tags": ["latest", "1.25.2"],
     "architectures": ["amd64", "arm64"]
 }
 ```
+**说明**: 工作流会从 `nginx:latest` 和 `nginx:1.25.2` 同步镜像
 
 #### 示例 2: 多版本标签
 
 ```json
 {
-    "source": "ubuntu:22.04",
+    "source": "ubuntu",
     "target": "ubuntu",
-    "tags": ["22.04", "jammy", "latest"],
+    "tags": ["latest", "22.04", "20.04", "18.04"],
     "architectures": ["amd64", "arm64"]
 }
 ```
+**说明**: 工作流会同步多个 Ubuntu 版本的镜像
 
-#### 示例 3: 用户仓库镜像
+#### 示例 3: 用户仓库镜像（source 不包含标签）
 
 ```json
 {
-    "source": "vllm/vllm-openai:v0.11.0",
+    "source": "vllm/vllm-openai",
     "target": "vllm-openai",
-    "tags": ["v0.11.0", "latest"],
+    "tags": ["v0.11.0", "latest", "v0.10.2", "v0.9.2"],
     "architectures": ["amd64", "arm64"]
 }
 ```
+**说明**: 工作流会从 `vllm/vllm-openai:v0.11.0`、`vllm/vllm-openai:latest` 等同步镜像
 
 #### 示例 4: GitHub Container Registry 镜像
 
 ```json
 {
-    "source": "ghcr.io/open-webui/open-webui:main",
+    "source": "ghcr.io/open-webui/open-webui",
     "target": "open-webui",
-    "tags": ["main", "latest"],
+    "tags": ["v0.6.35", "v0.6.36"],
     "architectures": ["amd64", "arm64"]
 }
 ```
+**说明**: 工作流会从 GitHub Container Registry 同步指定版本的镜像
+
+#### 示例 5: source 包含标签的情况
+
+```json
+{
+    "source": "linuxserver/code-server:4.105.1",
+    "target": "code-server",
+    "tags": ["4.105.1"],
+    "architectures": ["amd64", "arm64"]
+}
+```
+**说明**: 当 `source` 已包含标签时，直接使用该标签进行同步
+
+#### 示例 6: 带命名空间的镜像
+
+```json
+{
+    "source": "mcp/playwright",
+    "target": "mcp/playwright",
+    "tags": ["latest"],
+    "architectures": ["amd64", "arm64"]
+}
+```
+**说明**: `target` 可以包含命名空间，最终镜像路径为 `registry.cn-hangzhou.aliyuncs.com/{命名空间}/mcp/playwright:latest`
 
 ### 配置注意事项
 
@@ -189,19 +228,28 @@ dockerTransfer/
    - 建议使用 JSON 验证工具检查格式是否正确
 
 2. **镜像命名规范**:
-   - `source` 字段必须包含完整的镜像标识（仓库/名称:标签）
-   - `target` 字段只需包含镜像名称，不应包含标签
+   - `source` 字段可以包含标签也可以不包含标签
+     - 如果包含标签（有 `:`），则直接使用该标签
+     - 如果不包含标签，则使用 `tags` 数组中的每个标签来构建源镜像地址
+   - `target` 字段只需包含镜像名称（可包含命名空间），不应包含标签
    - 标签名称应遵循 Docker 标签命名规范（字母、数字、下划线、连字符、点）
 
 3. **架构选择建议**:
    - 根据目标环境选择合适的架构
    - 多架构支持会增加传输时间和存储空间
    - 确保源镜像仓库支持指定的架构
+   - 当前工作流主要支持 `amd64` 和 `arm64` 架构
 
 4. **标签管理**:
    - 建议为每个镜像配置语义化的版本标签
    - 保留 `latest` 标签以便于使用
    - 避免使用过多标签，以免增加管理复杂度
+   - 如果源镜像有多个版本需要同步，可以在 `tags` 数组中列出所有需要的标签
+
+5. **source 字段使用建议**:
+   - 如果源镜像只有一个标签需要同步，可以在 `source` 中包含标签
+   - 如果源镜像有多个标签需要同步，建议在 `source` 中不包含标签，在 `tags` 数组中列出所有标签
+   - 这样可以避免重复配置，提高配置的可维护性
 
 ## 工作流说明
 
@@ -217,12 +265,14 @@ dockerTransfer/
 
 ### 工作流程
 
-1. **环境准备**: 安装 skopeo、jq 等必要工具
-2. **登录认证**: 登录到目标容器镜像仓库（阿里云）
+1. **环境准备**: 安装 skopeo、jq 等必要工具，清理磁盘空间
+2. **登录认证**: 登录到目标容器镜像仓库（阿里云容器镜像服务）
 3. **镜像处理**: 遍历 `images.json` 中的每个镜像配置
-4. **架构同步**: 对于每个标签，分别同步 amd64 和 arm64 架构
-5. **多架构清单**: 如果两个架构都成功，创建多架构 manifest list
-6. **清理工作**: 清理临时文件和释放磁盘空间
+4. **标签处理**: 对于每个镜像配置，遍历 `tags` 数组中的每个标签
+5. **架构同步**: 对于每个标签，分别同步 amd64 和 arm64 架构到临时标签
+6. **多架构清单**: 如果两个架构都成功，创建多架构 manifest list 并推送到最终目标
+7. **单架构处理**: 如果只有一个架构成功，直接推送到最终目标
+8. **清理工作**: 清理临时文件和释放磁盘空间
 
 ### 执行时间
 
@@ -238,23 +288,23 @@ dockerTransfer/
 
 ```json
 {
-    "source": "nginx:1.21",
+    "source": "nginx",
     "target": "nginx",
-    "tags": ["1.21", "latest"],
+    "tags": ["latest", "1.25.2"],
     "architectures": ["amd64", "arm64"]
 }
 ```
 
-### 场景 2: 镜像备份
+### 场景 2: 多版本镜像同步
 
-定期备份重要的生产环境镜像：
+同步同一镜像的多个版本标签：
 
 ```json
 {
-    "source": "myapp:production",
-    "target": "myapp-backup",
-    "tags": ["production", "latest"],
-    "architectures": ["amd64"]
+    "source": "ubuntu",
+    "target": "ubuntu",
+    "tags": ["latest", "22.04", "20.04", "18.04"],
+    "architectures": ["amd64", "arm64"]
 }
 ```
 
@@ -264,9 +314,22 @@ dockerTransfer/
 
 ```json
 {
-    "source": "myapp:latest",
-    "target": "myapp",
-    "tags": ["latest"],
+    "source": "vllm/vllm-openai",
+    "target": "vllm-openai",
+    "tags": ["v0.11.0", "latest"],
+    "architectures": ["amd64", "arm64"]
+}
+```
+
+### 场景 4: 第三方仓库镜像同步
+
+同步 GitHub Container Registry 或其他第三方仓库的镜像：
+
+```json
+{
+    "source": "ghcr.io/open-webui/open-webui",
+    "target": "open-webui",
+    "tags": ["v0.6.35", "v0.6.36"],
     "architectures": ["amd64", "arm64"]
 }
 ```
@@ -281,9 +344,12 @@ dockerTransfer/
 
 **排查步骤**:
 1. 检查源镜像地址是否正确且可访问
+   - 如果 `source` 不包含标签，确认 `tags` 数组中的标签是否存在
+   - 如果 `source` 包含标签，确认该标签是否存在
 2. 确认源镜像是否支持指定的架构
-3. 检查网络连接是否正常
-4. 查看工作流日志中的详细错误信息
+3. 检查网络连接是否正常（GitHub Actions Runner 需要能够访问源镜像仓库）
+4. 查看工作流日志中的详细错误信息（工作流已启用 `set -x`，会显示所有执行的命令）
+5. 检查是否有超时问题（amd64 超时 60 分钟，arm64 超时 30 分钟）
 
 #### 2. 认证失败
 
@@ -340,6 +406,23 @@ dockerTransfer/
 
 - ✅ 支持多架构镜像同步（amd64、arm64）
 - ✅ 支持多标签管理
+- ✅ 支持 source 字段包含或不包含标签两种配置方式
 - ✅ 自动创建多架构 manifest list
 - ✅ 完善的错误处理和重试机制
+- ✅ 超时保护机制（amd64 60分钟，arm64 30分钟）
 - ✅ 定时任务和手动触发支持
+- ✅ 智能磁盘空间管理
+- ✅ 单架构镜像自动降级处理
+
+## 当前同步的镜像列表
+
+项目当前配置同步以下镜像（详见 `images.json`）：
+
+- **基础镜像**: centos, nginx, alpine, ubuntu
+- **数据库**: redis, mysql
+- **Web 服务器**: openresty
+- **开发工具**: phpmyadmin, code-server, n8n
+- **AI/ML 相关**: open-webui, vllm-openai, nvidia/cuda
+- **MCP 工具**: sequentialthinking, fetch, context7, playwright, firecrawl
+
+所有镜像均支持 amd64 和 arm64 架构，并配置了相应的版本标签。
