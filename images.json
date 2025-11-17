@@ -91,7 +91,7 @@
         "source": "ghcr.io/open-webui/open-webui",
         "target": "open-webui",
         "tags": [
-            "v0.6.36","latest"
+            "v0.6.36","main"
         ],
         "architectures": [
             "amd64",
