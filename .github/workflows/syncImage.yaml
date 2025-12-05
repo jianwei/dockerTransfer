@@ -352,35 +352,43 @@ jobs:
               fi
             fi
             
-            # 如果两个架构都成功，创建多架构 manifest
+            # 如果两个架构都成功，使用 skopeo copy --all 创建多架构 manifest
             echo "🔗 Creating multi-arch manifest for $final_target"
+            echo "   Source images:"
+            echo "   - $temp_amd64"
+            echo "   - $temp_arm64"
+            echo "   Target: $final_target"
             
-            # 获取两个架构的 manifest 详细信息
-            echo "📋 Getting manifest information for amd64..."
-            amd64_info=$(skopeo inspect "docker://$temp_amd64" 2>/dev/null)
-            if [ -z "$amd64_info" ]; then
-              echo "❌ Failed to inspect amd64 image"
+            # 验证临时镜像是否存在
+            if ! skopeo inspect "docker://$temp_amd64" >/dev/null 2>&1; then
+              echo "❌ Failed to inspect amd64 temporary image"
               continue
             fi
-            amd64_digest=$(echo "$amd64_info" | jq -r '.Digest')
+            if ! skopeo inspect "docker://$temp_arm64" >/dev/null 2>&1; then
+              echo "❌ Failed to inspect arm64 temporary image"
+              continue
+            fi
+            
+            # 直接从临时标签创建 manifest list
+            echo "📤 Creating multi-arch manifest list..."
+            
+            # 获取两个架构的 manifest digest
+            echo "📋 Getting manifest digests..."
+            amd64_inspect=$(skopeo inspect "docker://$temp_amd64" 2>/dev/null)
+            arm64_inspect=$(skopeo inspect "docker://$temp_arm64" 2>/dev/null)
+            
+            if [ -z "$amd64_inspect" ] || [ -z "$arm64_inspect" ]; then
+              echo "❌ Failed to get manifest information"
+              continue
+            fi
+            
+            # 获取 manifest digest 和 raw manifest
+            amd64_digest=$(echo "$amd64_inspect" | jq -r '.Digest')
+            arm64_digest=$(echo "$arm64_inspect" | jq -r '.Digest')
             amd64_manifest=$(skopeo inspect --raw "docker://$temp_amd64" 2>/dev/null)
-            # manifest 大小是 JSON 的字节数
-            amd64_size=$(echo -n "$amd64_manifest" | wc -c)
-            
-            echo "📋 Getting manifest information for arm64..."
-            arm64_info=$(skopeo inspect "docker://$temp_arm64" 2>/dev/null)
-            if [ -z "$arm64_info" ]; then
-              echo "❌ Failed to inspect arm64 image"
-              continue
-            fi
-            arm64_digest=$(echo "$arm64_info" | jq -r '.Digest')
             arm64_manifest=$(skopeo inspect --raw "docker://$temp_arm64" 2>/dev/null)
-            # manifest 大小是 JSON 的字节数
+            amd64_size=$(echo -n "$amd64_manifest" | wc -c)
             arm64_size=$(echo -n "$arm64_manifest" | wc -c)
-            
-            echo "📊 Manifest digests:"
-            echo "   amd64: $amd64_digest (size: $amd64_size bytes)"
-            echo "   arm64: $arm64_digest (size: $arm64_size bytes)"
             
             # 验证 digest 格式
             if [ -z "$amd64_digest" ] || [ "$amd64_digest" = "null" ] || ! echo "$amd64_digest" | grep -q "^sha256:"; then
@@ -391,6 +399,27 @@ jobs:
               echo "❌ Invalid arm64 digest: $arm64_digest"
               continue
             fi
+            
+            echo "📊 Manifest digests:"
+            echo "   amd64: $amd64_digest (size: $amd64_size bytes)"
+            echo "   arm64: $arm64_digest (size: $arm64_size bytes)"
+            
+            # 提取 registry 信息
+            registry_host=$(echo "$final_target" | sed 's|/.*||')
+            image_path=$(echo "$final_target" | sed "s|^${registry_host}/||" | sed 's|:.*||')
+            image_tag=$(echo "$final_target" | sed 's|.*:||')
+            
+            # 验证 manifest 是否存在于 registry 中（通过检查临时标签）
+            echo "🔍 Verifying manifests exist in registry..."
+            if ! skopeo inspect --raw "docker://$temp_amd64" >/dev/null 2>&1; then
+              echo "❌ amd64 manifest not found in registry"
+              continue
+            fi
+            if ! skopeo inspect --raw "docker://$temp_arm64" >/dev/null 2>&1; then
+              echo "❌ arm64 manifest not found in registry"
+              continue
+            fi
+            echo "✅ Both manifests exist in registry"
             
             # 创建 manifest list
             manifest_list=$(jq -n \
@@ -423,38 +452,29 @@ jobs:
                 ]
               }')
             
-            # 将 manifest list 保存到临时文件
+            # 保存 manifest list 到临时文件
             echo "$manifest_list" > /tmp/manifest-list.json
             
-            # 使用 Docker Registry API 推送 manifest list
-            # 提取 registry 和镜像路径
-            registry_host=$(echo "$final_target" | sed 's|/.*||')
-            image_path=$(echo "$final_target" | sed "s|^${registry_host}/||" | sed 's|:.*||')
-            image_tag=$(echo "$final_target" | sed 's|.*:||')
-            
-            # 获取认证 token（使用 skopeo 的认证信息）
+            # 获取认证 token
             echo "🔐 Getting authentication token..."
-            auth_response=$(curl -s -u "${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" \
-              "https://${registry_host}/v2/token?service=${registry_host}&scope=repository:${image_path}:pull,push")
-            
-            # 如果上面的 API 不存在，尝试使用标准的 Docker registry 认证
-            # 大多数 registry 使用 /v2/ 端点
             token=""
+            auth_response=$(curl -s -u "${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" \
+              "https://${registry_host}/v2/token?service=${registry_host}&scope=repository:${image_path}:pull,push" 2>/dev/null)
+            
             if [ -n "$auth_response" ] && echo "$auth_response" | jq -e '.token' >/dev/null 2>&1; then
               token=$(echo "$auth_response" | jq -r '.token')
             else
-              # 尝试标准 Docker registry 认证流程
+              # 尝试标准 Docker registry 认证
               auth_url="https://${registry_host}/v2/"
-              www_auth=$(curl -s -I "$auth_url" | grep -i "www-authenticate" | cut -d' ' -f2-)
+              www_auth=$(curl -s -I "$auth_url" 2>/dev/null | grep -i "www-authenticate" | cut -d' ' -f2-)
               if [ -n "$www_auth" ]; then
-                # 解析 WWW-Authenticate header 获取认证服务
                 realm=$(echo "$www_auth" | grep -oP 'realm="[^"]+"' | cut -d'"' -f2)
                 service=$(echo "$www_auth" | grep -oP 'service="[^"]+"' | cut -d'"' -f2)
                 scope="repository:${image_path}:pull,push"
                 
                 if [ -n "$realm" ] && [ -n "$service" ]; then
                   token_url="${realm}?service=${service}&scope=${scope}"
-                  auth_response=$(curl -s -u "${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" "$token_url")
+                  auth_response=$(curl -s -u "${{ secrets.ALIYUN_USERNAME }}:${{ secrets.ALIYUN_PASSWORD }}" "$token_url" 2>/dev/null)
                   if echo "$auth_response" | jq -e '.token' >/dev/null 2>&1; then
                     token=$(echo "$auth_response" | jq -r '.token')
                   fi
@@ -462,7 +482,7 @@ jobs:
               fi
             fi
             
-            # 如果获取到 token，推送 manifest list
+            # 推送 manifest list
             manifest_created=false
             if [ -n "$token" ] && [ "$token" != "null" ]; then
               echo "📤 Pushing multi-arch manifest list..."
@@ -472,7 +492,6 @@ jobs:
               http_response=$(curl -s -X PUT "$put_url" \
                 -H "Authorization: Bearer $token" \
                 -H "Content-Type: application/vnd.docker.distribution.manifest.list.v2+json" \
-                -H "Content-Length: $manifest_size" \
                 --data-binary @/tmp/manifest-list.json \
                 -w "\nHTTP_STATUS:%{http_code}")
               
@@ -482,50 +501,36 @@ jobs:
                 echo "✅ Multi-arch manifest created successfully: $final_target"
                 manifest_created=true
                 
-                # 验证 manifest list 是否创建成功
+                # 验证 manifest list
                 echo "🔍 Verifying manifest list..."
+                sleep 2
                 if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
+                  final_info=$(skopeo inspect "docker://$final_target" 2>/dev/null)
                   echo "✅ Manifest list verified successfully"
+                  echo "📊 Final image info:"
+                  echo "$final_info" | jq -r '.Architecture // "multi-arch", .Digest'
                 else
                   echo "⚠️  Warning: Manifest list verification failed"
                 fi
               else
                 echo "❌ Failed to push manifest list via API (HTTP $http_code)"
                 echo "   Response: $(echo "$http_response" | head -n -1)"
-                echo "⚠️  Individual architecture images are still available at:"
-                echo "   - $temp_amd64"
-                echo "   - $temp_arm64"
               fi
             else
               echo "⚠️  Could not obtain authentication token"
-              echo "📝 Individual architecture images are available at:"
-              echo "   - $temp_amd64"
-              echo "   - $temp_arm64"
-              echo "💡 You can create the multi-arch manifest manually using:"
-              echo "   docker buildx imagetools create -t $final_target $temp_amd64 $temp_arm64"
             fi
             
             # 清理临时文件
             rm -f /tmp/manifest-list.json
             
-            # 注意：manifest list 引用的是 manifest 的 digest，而不是标签
-            # 只要 manifest 和相关的 blob 还在，即使删除标签，manifest list 也能正常工作
-            # 但是，为了安全起见，我们保留临时标签，因为它们占用的空间很小（只是标签引用）
-            # 如果确实需要清理，可以使用 registry 的垃圾回收功能
             if [ "$manifest_created" = "true" ]; then
               echo "✅ Multi-arch manifest list created successfully"
-              echo "📝 Note: Temporary tags are kept to ensure manifest list references remain valid"
-              echo "   - $temp_amd64"
-              echo "   - $temp_arm64"
-              echo "💡 These tags can be manually deleted later if needed, but keeping them is safe"
-              
-              # 可选：如果确实需要清理临时标签，取消下面的注释
-              # echo "🧹 Cleaning up temporary tags..."
-              # sleep 5  # 等待确保 manifest list 已完全创建
-              # skopeo delete "docker://$temp_amd64" 2>/dev/null || echo "⚠️  Failed to delete $temp_amd64"
-              # skopeo delete "docker://$temp_arm64" 2>/dev/null || echo "⚠️  Failed to delete $temp_arm64"
+              echo "🧹 Cleaning up temporary tags..."
+              sleep 3
+              skopeo delete "docker://$temp_amd64" 2>/dev/null || true
+              skopeo delete "docker://$temp_arm64" 2>/dev/null || true
             else
-              echo "⚠️  Keeping temporary tags for manual manifest list creation:"
+              echo "⚠️  Keeping temporary tags:"
               echo "   - $temp_amd64"
               echo "   - $temp_arm64"
             fi
