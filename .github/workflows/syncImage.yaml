@@ -352,28 +352,16 @@ jobs:
               fi
             fi
             
-            # 如果两个架构都成功，使用 skopeo copy --all 创建多架构 manifest
+            # 如果两个架构都成功，先复制到最终目标的临时 digest 标签，然后创建 manifest list
             echo "🔗 Creating multi-arch manifest for $final_target"
-            echo "   Source images:"
-            echo "   - $temp_amd64"
-            echo "   - $temp_arm64"
-            echo "   Target: $final_target"
             
-            # 验证临时镜像是否存在
-            if ! skopeo inspect "docker://$temp_amd64" >/dev/null 2>&1; then
-              echo "❌ Failed to inspect amd64 temporary image"
-              continue
-            fi
-            if ! skopeo inspect "docker://$temp_arm64" >/dev/null 2>&1; then
-              echo "❌ Failed to inspect arm64 temporary image"
-              continue
-            fi
+            # 提取 registry 信息
+            registry_host=$(echo "$final_target" | sed 's|/.*||')
+            image_path=$(echo "$final_target" | sed "s|^${registry_host}/||" | sed 's|:.*||')
+            image_tag=$(echo "$final_target" | sed 's|.*:||')
             
-            # 直接从临时标签创建 manifest list
-            echo "📤 Creating multi-arch manifest list..."
-            
-            # 获取两个架构的 manifest digest
-            echo "📋 Getting manifest digests..."
+            # 获取两个架构的 manifest digest（从临时标签）
+            echo "📋 Getting manifest digests from temporary images..."
             amd64_inspect=$(skopeo inspect "docker://$temp_amd64" 2>/dev/null)
             arm64_inspect=$(skopeo inspect "docker://$temp_arm64" 2>/dev/null)
             
@@ -382,13 +370,8 @@ jobs:
               continue
             fi
             
-            # 获取 manifest digest 和 raw manifest
             amd64_digest=$(echo "$amd64_inspect" | jq -r '.Digest')
             arm64_digest=$(echo "$arm64_inspect" | jq -r '.Digest')
-            amd64_manifest=$(skopeo inspect --raw "docker://$temp_amd64" 2>/dev/null)
-            arm64_manifest=$(skopeo inspect --raw "docker://$temp_arm64" 2>/dev/null)
-            amd64_size=$(echo -n "$amd64_manifest" | wc -c)
-            arm64_size=$(echo -n "$arm64_manifest" | wc -c)
             
             # 验证 digest 格式
             if [ -z "$amd64_digest" ] || [ "$amd64_digest" = "null" ] || ! echo "$amd64_digest" | grep -q "^sha256:"; then
@@ -401,32 +384,63 @@ jobs:
             fi
             
             echo "📊 Manifest digests:"
-            echo "   amd64: $amd64_digest (size: $amd64_size bytes)"
-            echo "   arm64: $arm64_digest (size: $arm64_size bytes)"
+            echo "   amd64: $amd64_digest"
+            echo "   arm64: $arm64_digest"
             
-            # 提取 registry 信息
-            registry_host=$(echo "$final_target" | sed 's|/.*||')
-            image_path=$(echo "$final_target" | sed "s|^${registry_host}/||" | sed 's|:.*||')
-            image_tag=$(echo "$final_target" | sed 's|.*:||')
+            # 创建最终目标的临时 digest 标签（用于 manifest list 引用）
+            final_amd64_digest_tag="${final_target%:*}-amd64-digest-${amd64_digest#sha256:}"
+            final_arm64_digest_tag="${final_target%:*}-arm64-digest-${arm64_digest#sha256:}"
             
-            # 验证 manifest 是否存在于 registry 中（通过检查临时标签）
-            echo "🔍 Verifying manifests exist in registry..."
-            if ! skopeo inspect --raw "docker://$temp_amd64" >/dev/null 2>&1; then
-              echo "❌ amd64 manifest not found in registry"
+            # 复制到最终目标的临时 digest 标签（确保 manifest 和 blob 都在最终 repository 中）
+            echo "📥 Copying amd64 to final repository..."
+            if ! timeout 1800 skopeo copy \
+              --src-tls-verify=false \
+              --dest-tls-verify=false \
+              --retry-times 5 \
+              "docker://$temp_amd64" \
+              "docker://$final_amd64_digest_tag" 2>&1; then
+              echo "❌ Failed to copy amd64 to final repository"
               continue
             fi
-            if ! skopeo inspect --raw "docker://$temp_arm64" >/dev/null 2>&1; then
-              echo "❌ arm64 manifest not found in registry"
+            
+            echo "📥 Copying arm64 to final repository..."
+            if ! timeout 1800 skopeo copy \
+              --src-tls-verify=false \
+              --dest-tls-verify=false \
+              --retry-times 5 \
+              "docker://$temp_arm64" \
+              "docker://$final_arm64_digest_tag" 2>&1; then
+              echo "❌ Failed to copy arm64 to final repository"
               continue
             fi
-            echo "✅ Both manifests exist in registry"
+            
+            # 重新获取 digest（从最终 repository 中的镜像）
+            echo "📋 Getting digests from final repository..."
+            final_amd64_inspect=$(skopeo inspect "docker://$final_amd64_digest_tag" 2>/dev/null)
+            final_arm64_inspect=$(skopeo inspect "docker://$final_arm64_digest_tag" 2>/dev/null)
+            
+            if [ -z "$final_amd64_inspect" ] || [ -z "$final_arm64_inspect" ]; then
+              echo "❌ Failed to inspect images in final repository"
+              continue
+            fi
+            
+            final_amd64_digest=$(echo "$final_amd64_inspect" | jq -r '.Digest')
+            final_arm64_digest=$(echo "$final_arm64_inspect" | jq -r '.Digest')
+            final_amd64_manifest=$(skopeo inspect --raw "docker://$final_amd64_digest_tag" 2>/dev/null)
+            final_arm64_manifest=$(skopeo inspect --raw "docker://$final_arm64_digest_tag" 2>/dev/null)
+            final_amd64_size=$(echo -n "$final_amd64_manifest" | wc -c)
+            final_arm64_size=$(echo -n "$final_arm64_manifest" | wc -c)
+            
+            echo "📊 Final repository digests:"
+            echo "   amd64: $final_amd64_digest (size: $final_amd64_size bytes)"
+            echo "   arm64: $final_arm64_digest (size: $final_arm64_size bytes)"
             
             # 创建 manifest list
             manifest_list=$(jq -n \
-              --arg amd64_digest "$amd64_digest" \
-              --arg arm64_digest "$arm64_digest" \
-              --argjson amd64_size "$amd64_size" \
-              --argjson arm64_size "$arm64_size" \
+              --arg amd64_digest "$final_amd64_digest" \
+              --arg arm64_digest "$final_arm64_digest" \
+              --argjson amd64_size "$final_amd64_size" \
+              --argjson arm64_size "$final_arm64_size" \
               '{
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -486,7 +500,6 @@ jobs:
             manifest_created=false
             if [ -n "$token" ] && [ "$token" != "null" ]; then
               echo "📤 Pushing multi-arch manifest list..."
-              manifest_size=$(echo "$manifest_list" | wc -c)
               put_url="https://${registry_host}/v2/${image_path}/manifests/${image_tag}"
               
               http_response=$(curl -s -X PUT "$put_url" \
@@ -503,7 +516,7 @@ jobs:
                 
                 # 验证 manifest list
                 echo "🔍 Verifying manifest list..."
-                sleep 2
+                sleep 3
                 if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
                   final_info=$(skopeo inspect "docker://$final_target" 2>/dev/null)
                   echo "✅ Manifest list verified successfully"
@@ -523,16 +536,19 @@ jobs:
             # 清理临时文件
             rm -f /tmp/manifest-list.json
             
+            # 清理临时标签
+            echo "🧹 Cleaning up temporary tags..."
+            skopeo delete "docker://$temp_amd64" 2>/dev/null || true
+            skopeo delete "docker://$temp_arm64" 2>/dev/null || true
+            skopeo delete "docker://$final_amd64_digest_tag" 2>/dev/null || true
+            skopeo delete "docker://$final_arm64_digest_tag" 2>/dev/null || true
+            
             if [ "$manifest_created" = "true" ]; then
               echo "✅ Multi-arch manifest list created successfully"
-              echo "🧹 Cleaning up temporary tags..."
-              sleep 3
-              skopeo delete "docker://$temp_amd64" 2>/dev/null || true
-              skopeo delete "docker://$temp_arm64" 2>/dev/null || true
             else
-              echo "⚠️  Keeping temporary tags:"
-              echo "   - $temp_amd64"
-              echo "   - $temp_arm64"
+              echo "⚠️  Manifest list creation failed, but images are available at:"
+              echo "   - $final_amd64_digest_tag"
+              echo "   - $final_arm64_digest_tag"
             fi
           done
         done
