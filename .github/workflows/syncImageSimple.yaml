@@ -1,4 +1,4 @@
-name: Sync Small Image to Aliyun 
+name: Sync Image to Aliyun Simple
 
 on:
   workflow_dispatch:
@@ -70,22 +70,63 @@ jobs:
               
               echo "📥 Copying $source_image ($arch) to $final_target"
               
-              # 直接复制指定架构的镜像
-              if timeout 3600 skopeo copy \
-                --src-tls-verify=false \
-                --dest-tls-verify=false \
-                --retry-times 5 \
-                --override-arch "$arch" \
-                --override-os linux \
-                "docker://$source_image" \
-                "docker://$final_target" 2>&1; then
-                echo "✅ Successfully copied $arch version"
-                
-                # 推送完成后清理本地缓存
+              # 检查源镜像的 manifest
+              source_manifest=$(skopeo inspect --raw "docker://$source_image" 2>/dev/null || echo "")
+              copied=false
+              
+              # 如果是多架构镜像，获取特定架构的 digest
+              if echo "$source_manifest" | jq -e '.manifests' > /dev/null 2>&1; then
+                arch_digest=$(echo "$source_manifest" | jq -r ".manifests[] | select(.platform.architecture == \"$arch\" and .platform.os == \"linux\") | .digest" | head -n1)
+                if [ -n "$arch_digest" ] && [ "$arch_digest" != "null" ]; then
+                  # 提取镜像名称（去掉标签）
+                  if echo "$source_image" | grep -q ":"; then
+                    image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
+                  else
+                    image_name="$source_image"
+                  fi
+                  
+                  echo "   Using digest: $arch_digest"
+                  if timeout 3600 skopeo copy \
+                    --src-tls-verify=false \
+                    --dest-tls-verify=false \
+                    --retry-times 5 \
+                    "docker://${image_name}@${arch_digest}" \
+                    "docker://$final_target" 2>&1; then
+                    copied=true
+                    echo "✅ Successfully copied $arch version (from multi-arch manifest)"
+                  else
+                    echo "❌ Failed to copy $arch version using digest"
+                  fi
+                fi
+              fi
+              
+              # 如果不是多架构镜像或上述方法失败，尝试直接复制
+              if [ "$copied" = "false" ]; then
+                echo "   Attempting direct copy..."
+                if timeout 3600 skopeo copy \
+                  --src-tls-verify=false \
+                  --dest-tls-verify=false \
+                  --retry-times 5 \
+                  "docker://$source_image" \
+                  "docker://$final_target" 2>&1; then
+                  # 验证架构
+                  copied_arch=$(skopeo inspect "docker://$final_target" 2>/dev/null | jq -r '.Architecture // "unknown"')
+                  if [ "$copied_arch" = "$arch" ] || [ "$copied_arch" = "unknown" ]; then
+                    copied=true
+                    echo "✅ Successfully copied $arch version"
+                  else
+                    echo "⚠️  Warning: Copied architecture is $copied_arch, expected $arch"
+                    copied=true
+                  fi
+                else
+                  echo "❌ Failed to copy $arch version"
+                fi
+              fi
+              
+              # 推送完成后清理本地缓存
+              if [ "$copied" = "true" ]; then
                 echo "🧹 Cleaning up local cache..."
                 docker system prune -af >/dev/null 2>&1 || true
-              else
-                echo "❌ Failed to copy $arch version"
               fi
             done
           done
