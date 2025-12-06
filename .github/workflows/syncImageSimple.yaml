@@ -1,0 +1,106 @@
+name: Sync Image to Aliyun Simple
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup and install dependencies
+      run: |
+        echo "=== Initial disk space ==="
+        df -h
+        
+        sudo apt-get update
+        sudo apt-get install -y skopeo jq
+        
+        echo "=== Disk space after install ==="
+        df -h
+
+    - name: Login to Alibaba Cloud Container Registry
+      run: |
+        skopeo login \
+          --username "${{ secrets.ALIYUN_USERNAME }}" \
+          --password "${{ secrets.ALIYUN_PASSWORD }}" \
+          registry.cn-hangzhou.aliyuncs.com
+
+    - name: Process images
+      run: |
+        set +e
+        set -x
+        
+        count=$(jq 'length' images-small.json)
+        echo "Found $count images to process"
+        
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1))/$count ==="
+          
+          source=$(jq -r ".[$i].source" images-small.json)
+          target=$(jq -r ".[$i].target" images-small.json)
+          tag_count=$(jq ".[$i].tags | length" images-small.json)
+          arch_count=$(jq ".[$i].architectures | length" images-small.json)
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images-small.json)
+            
+            # 构建源镜像名称
+            if echo "$source" | grep -q ":"; then
+              source_image="$source"
+            else
+              source_image="${source}:${tag}"
+            fi
+            
+            # 处理每个架构
+            for k in $(seq 0 $((arch_count-1))); do
+              arch=$(jq -r ".[$i].architectures[$k]" images-small.json)
+              final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-${arch}"
+              
+              echo "📥 Copying $source_image ($arch) to $final_target"
+              
+              # 直接复制指定架构的镜像
+              if timeout 3600 skopeo copy \
+                --src-tls-verify=false \
+                --dest-tls-verify=false \
+                --retry-times 5 \
+                --override-arch "$arch" \
+                --override-os linux \
+                "docker://$source_image" \
+                "docker://$final_target" 2>&1; then
+                echo "✅ Successfully copied $arch version"
+                
+                # 推送完成后清理本地缓存
+                echo "🧹 Cleaning up local cache..."
+                docker system prune -af >/dev/null 2>&1 || true
+              else
+                echo "❌ Failed to copy $arch version"
+              fi
+            done
+          done
+          
+          # 每个镜像处理完后清理
+          echo "🧹 Cleaning up after image $((i+1))..."
+          docker system prune -af >/dev/null 2>&1 || true
+          echo "=== Disk space after cleanup ==="
+          df -h
+        done
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Processing completed"
+        echo "=== Final disk space ==="
+        df -h
+
