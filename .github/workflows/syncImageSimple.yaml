@@ -63,6 +63,12 @@ jobs:
               source_image="${source}:${tag}"
             fi
             
+            # 规范化源镜像名称（确保 dockerhub 镜像格式正确）
+            if ! echo "$source_image" | grep -qE "^[^/]+/|^docker.io"; then
+              # 如果是单段名称（如 ubuntu:latest），添加 docker.io/library/ 前缀
+              source_image="docker.io/library/$source_image"
+            fi
+            
             # 处理每个架构
             for k in $(seq 0 $((arch_count-1))); do
               arch=$(jq -r ".[$i].architectures[$k]" images-small.json)
@@ -79,17 +85,11 @@ jobs:
                 arch_digest=$(echo "$source_manifest" | jq -r ".manifests[] | select(.platform.architecture == \"$arch\" and .platform.os == \"linux\") | .digest" | head -n1)
                 if [ -n "$arch_digest" ] && [ "$arch_digest" != "null" ] && echo "$arch_digest" | grep -q "^sha256:"; then
                   # 提取镜像名称（去掉标签，保留仓库地址）
+                  # 注意：不要添加 docker.io 前缀，让 skopeo 自动处理
                   if echo "$source_image" | grep -q ":"; then
                     image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
                   else
                     image_name="$source_image"
-                  fi
-                  
-                  # 确保镜像名称包含完整路径（对于 dockerhub 镜像）
-                  if ! echo "$image_name" | grep -q "/"; then
-                    image_name="docker.io/library/$image_name"
-                  elif ! echo "$image_name" | grep -q "^docker.io"; then
-                    image_name="docker.io/$image_name"
                   fi
                   
                   echo "   Multi-arch image detected"
@@ -104,12 +104,18 @@ jobs:
                     --retry-times 5 \
                     "docker://${image_name}@${arch_digest}" \
                     "docker://$final_target" 2>&1; then
+                    # 等待一下确保推送完成
+                    sleep 2
                     # 验证复制结果
-                    if skopeo inspect "docker://$final_target" >/dev/null 2>&1; then
-                      copied_size=$(skopeo inspect "docker://$final_target" 2>/dev/null | jq -r '.Size // 0')
-                      echo "✅ Successfully copied $arch version (size: $copied_size bytes)"
-                      if [ "$copied_size" = "0" ] || [ -z "$copied_size" ]; then
-                        echo "⚠️  Warning: Copied image size is 0, may be invalid"
+                    copied_info=$(skopeo inspect "docker://$final_target" 2>/dev/null)
+                    if [ -n "$copied_info" ]; then
+                      copied_size=$(echo "$copied_info" | jq -r '.Size // 0')
+                      copied_layers=$(echo "$copied_info" | jq -r '.Layers // [] | length')
+                      echo "✅ Successfully copied $arch version"
+                      echo "   Size: $copied_size bytes"
+                      echo "   Layers: $copied_layers"
+                      if [ "$copied_size" = "0" ] || [ -z "$copied_size" ] || [ "$copied_layers" = "0" ]; then
+                        echo "⚠️  Warning: Copied image size or layers is 0, retrying..."
                         copied=false
                       else
                         copied=true
