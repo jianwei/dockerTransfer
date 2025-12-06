@@ -36,7 +36,7 @@
         "source": "ubuntu",
         "target": "ubuntu",
         "tags": [
-            "latest","22.04","20.04","18.04"
+            "22.04","20.04","26.04"
         ],
         "architectures": [
             "amd64",

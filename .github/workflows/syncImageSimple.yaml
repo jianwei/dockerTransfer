@@ -1,4 +1,4 @@
-name: Sync Image to Aliyun Simple
+name: Sync Small Image to Aliyun 
 
 on:
   workflow_dispatch:
