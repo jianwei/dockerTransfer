@@ -63,34 +63,54 @@ jobs:
               source_image="${source}:${tag}"
             fi
             
+            # 存储成功推送的架构镜像列表
+            pushed_manifests=()
+            
             # 处理每个架构
             for k in $(seq 0 $((arch_count-1))); do
               arch=$(jq -r ".[$i].architectures[$k]" images-small.json)
-              final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-${arch}"
+              arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-${arch}"
               
-              echo "📥 Pulling $source_image ($arch) to $final_target"
+              echo "📥 Pulling $source_image ($arch) to $arch_target"
               
               # 拉取指定架构的镜像
               if timeout 3600 docker pull --platform linux/$arch "$source_image" 2>&1; then
                 # 打标签
-                docker tag "$source_image" "$final_target"
+                docker tag "$source_image" "$arch_target"
                 
                 # 推送
-                if timeout 1800 docker push "$final_target" 2>&1; then
+                if timeout 1800 docker push "$arch_target" 2>&1; then
                   echo "✅ Successfully pushed $arch version"
+                  pushed_manifests+=("$arch_target")
                   
                   # 清理本地镜像
                   echo "🧹 Cleaning up local images..."
-                  docker rmi "$source_image" "$final_target" 2>/dev/null || true
+                  docker rmi "$source_image" "$arch_target" 2>/dev/null || true
                   docker system prune -af >/dev/null 2>&1 || true
                 else
                   echo "❌ Failed to push $arch version"
-                  docker rmi "$source_image" "$final_target" 2>/dev/null || true
+                  docker rmi "$source_image" "$arch_target" 2>/dev/null || true
                 fi
               else
                 echo "❌ Failed to pull $arch version"
               fi
             done
+            
+            # 如果所有架构都成功推送，创建合并的 manifest
+            if [ ${#pushed_manifests[@]} -eq $arch_count ] && [ $arch_count -gt 1 ]; then
+              merged_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}"
+              echo "🔗 Creating merged manifest $merged_target"
+              
+              # 创建 manifest
+              docker manifest create "$merged_target" "${pushed_manifests[@]}" 2>&1
+              
+              # 推送合并的 manifest
+              if timeout 300 docker manifest push "$merged_target" 2>&1; then
+                echo "✅ Successfully pushed merged manifest $merged_target"
+              else
+                echo "❌ Failed to push merged manifest"
+              fi
+            fi
           done
           
           # 每个镜像处理完后清理
