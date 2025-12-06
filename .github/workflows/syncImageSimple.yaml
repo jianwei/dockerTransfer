@@ -14,22 +14,22 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
 
-    - name: Setup and install dependencies
+    - name: Setup Docker and dependencies
       run: |
         echo "=== Initial disk space ==="
         df -h
         
         sudo apt-get update
-        sudo apt-get install -y skopeo jq
+        sudo apt-get install -y jq
         
         echo "=== Disk space after install ==="
         df -h
 
     - name: Login to Alibaba Cloud Container Registry
       run: |
-        skopeo login \
+        echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
           --username "${{ secrets.ALIYUN_USERNAME }}" \
-          --password "${{ secrets.ALIYUN_PASSWORD }}" \
+          --password-stdin \
           registry.cn-hangzhou.aliyuncs.com
 
     - name: Process images
@@ -63,123 +63,32 @@ jobs:
               source_image="${source}:${tag}"
             fi
             
-            # 规范化源镜像名称（确保 dockerhub 镜像格式正确）
-            if ! echo "$source_image" | grep -qE "^[^/]+/|^docker.io"; then
-              # 如果是单段名称（如 ubuntu:latest），添加 docker.io/library/ 前缀
-              source_image="docker.io/library/$source_image"
-            fi
-            
             # 处理每个架构
             for k in $(seq 0 $((arch_count-1))); do
               arch=$(jq -r ".[$i].architectures[$k]" images-small.json)
               final_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${target}:${tag}-${arch}"
               
-              echo "📥 Copying $source_image ($arch) to $final_target"
+              echo "📥 Pulling $source_image ($arch) to $final_target"
               
-              # 检查源镜像的 manifest
-              source_manifest=$(skopeo inspect --raw "docker://$source_image" 2>/dev/null || echo "")
-              copied=false
-              
-              # 如果是多架构镜像，获取特定架构的 digest
-              if echo "$source_manifest" | jq -e '.manifests' > /dev/null 2>&1; then
-                arch_digest=$(echo "$source_manifest" | jq -r ".manifests[] | select(.platform.architecture == \"$arch\" and .platform.os == \"linux\") | .digest" | head -n1)
-                if [ -n "$arch_digest" ] && [ "$arch_digest" != "null" ] && echo "$arch_digest" | grep -q "^sha256:"; then
-                  # 提取镜像名称（去掉标签，保留仓库地址）
-                  # 注意：不要添加 docker.io 前缀，让 skopeo 自动处理
-                  if echo "$source_image" | grep -q ":"; then
-                    image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
-                  else
-                    image_name="$source_image"
-                  fi
-                  
-                  echo "   Multi-arch image detected"
-                  echo "   Image name: $image_name"
-                  echo "   Architecture digest: $arch_digest"
-                  echo "   Source: docker://${image_name}@${arch_digest}"
-                  echo "   Target: docker://$final_target"
-                  
-                  if timeout 3600 skopeo copy \
-                    --src-tls-verify=false \
-                    --dest-tls-verify=false \
-                    --retry-times 5 \
-                    "docker://${image_name}@${arch_digest}" \
-                    "docker://$final_target" 2>&1; then
-                    # 等待一下确保推送完成
-                    sleep 2
-                    # 验证复制结果
-                    copied_info=$(skopeo inspect "docker://$final_target" 2>/dev/null)
-                    if [ -n "$copied_info" ]; then
-                      copied_size=$(echo "$copied_info" | jq -r '.Size // 0')
-                      copied_layers=$(echo "$copied_info" | jq -r '.Layers // [] | length')
-                      echo "✅ Successfully copied $arch version"
-                      echo "   Size: $copied_size bytes"
-                      echo "   Layers: $copied_layers"
-                      if [ "$copied_size" = "0" ] || [ -z "$copied_size" ] || [ "$copied_layers" = "0" ]; then
-                        echo "⚠️  Warning: Copied image size or layers is 0, retrying..."
-                        copied=false
-                      else
-                        copied=true
-                      fi
-                    else
-                      echo "❌ Failed to verify copied image"
-                      copied=false
-                    fi
-                  else
-                    copy_exit_code=$?
-                    echo "❌ Failed to copy $arch version using digest (exit code: $copy_exit_code)"
-                    copied=false
-                  fi
-                else
-                  echo "⚠️  No valid $arch digest found in multi-arch manifest"
-                fi
-              fi
-              
-              # 如果不是多架构镜像或上述方法失败，尝试直接复制
-              if [ "$copied" = "false" ]; then
-                echo "   Attempting direct copy..."
-                echo "   Source: docker://$source_image"
-                echo "   Target: docker://$final_target"
+              # 拉取指定架构的镜像
+              if timeout 3600 docker pull --platform linux/$arch "$source_image" 2>&1; then
+                # 打标签
+                docker tag "$source_image" "$final_target"
                 
-                timeout 3600 skopeo copy \
-                  --src-tls-verify=false \
-                  --dest-tls-verify=false \
-                  --retry-times 5 \
-                  "docker://$source_image" \
-                  "docker://$final_target" 2>&1
-                copy_exit_code=$?
-                
-                if [ $copy_exit_code -eq 0 ]; then
-                  # 验证架构和大小
-                  copied_info=$(skopeo inspect "docker://$final_target" 2>/dev/null)
-                  if [ -n "$copied_info" ]; then
-                    copied_arch=$(echo "$copied_info" | jq -r '.Architecture // "unknown"')
-                    copied_size=$(echo "$copied_info" | jq -r '.Size // 0')
-                    echo "📊 Copied image - Architecture: $copied_arch, Size: $copied_size bytes"
-                    
-                    if [ "$copied_size" = "0" ] || [ -z "$copied_size" ]; then
-                      echo "❌ Copied image size is 0, copy may have failed"
-                      copied=false
-                    elif [ "$copied_arch" = "$arch" ] || [ "$copied_arch" = "unknown" ]; then
-                      copied=true
-                      echo "✅ Successfully copied $arch version"
-                    else
-                      echo "⚠️  Warning: Copied architecture is $copied_arch, expected $arch"
-                      copied=true
-                    fi
-                  else
-                    echo "❌ Failed to inspect copied image"
-                    copied=false
-                  fi
+                # 推送
+                if timeout 1800 docker push "$final_target" 2>&1; then
+                  echo "✅ Successfully pushed $arch version"
+                  
+                  # 清理本地镜像
+                  echo "🧹 Cleaning up local images..."
+                  docker rmi "$source_image" "$final_target" 2>/dev/null || true
+                  docker system prune -af >/dev/null 2>&1 || true
                 else
-                  echo "❌ Failed to copy $arch version (exit code: $copy_exit_code)"
-                  copied=false
+                  echo "❌ Failed to push $arch version"
+                  docker rmi "$source_image" "$final_target" 2>/dev/null || true
                 fi
-              fi
-              
-              # 推送完成后清理本地缓存
-              if [ "$copied" = "true" ]; then
-                echo "🧹 Cleaning up local cache..."
-                docker system prune -af >/dev/null 2>&1 || true
+              else
+                echo "❌ Failed to pull $arch version"
               fi
             done
           done
@@ -197,4 +106,3 @@ jobs:
         echo "🏁 Processing completed"
         echo "=== Final disk space ==="
         df -h
-
