@@ -215,5 +215,15 @@
             "amd64",
             "arm64"
         ]
+    },
+    {
+        "source": "localai/localai",
+        "target": "localai",
+        "tags": [
+            "master-aio-gpu-nvidia-cuda-13"
+        ],
+        "architectures": [
+            "amd64"
+        ]
     }
 ]
