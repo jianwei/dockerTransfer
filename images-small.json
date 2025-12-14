@@ -1,13 +1,12 @@
 [
     {
-        "source": "ghcr.io/comfyanonymous/comfyui",
-        "target": "comfyui",
+        "source": "yanwk/comfyui-boot",
+        "target": "comfyui-boot",
         "tags": [
-            "latest"
+            "cu130-slim-20251212"
         ],
         "architectures": [
-            "amd64",
-            "arm64"
+            "amd64"
         ]
     },
     {
@@ -238,4 +237,5 @@
             "amd64"
         ]
     }
+    
 ]
