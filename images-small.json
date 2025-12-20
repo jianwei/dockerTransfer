@@ -10,6 +10,17 @@
         ]
     },
     {
+        "source": "ghcr.io/comfyanonymous/comfyui",
+        "target": "comfyui",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "centos",
         "target": "centos",
         "tags": [
