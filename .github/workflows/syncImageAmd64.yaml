@@ -70,7 +70,7 @@ jobs:
               source_image="${source}:${tag}"
             fi
             
-            arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}-amd64"
+            arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}"
             
             echo "📥 Pulling $source_image (amd64) to $arch_target"
             
