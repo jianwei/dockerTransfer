@@ -1,0 +1,112 @@
+name: Sync Image to Aliyun Amd64 Only
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  sync-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup Docker and dependencies
+      run: |
+        echo "=== Initial disk space ==="
+        df -h
+        
+        sudo apt-get update
+        sudo apt-get install -y jq
+        
+        echo "=== Disk space after install ==="
+        df -h
+
+    - name: Login to Alibaba Cloud Container Registry
+      run: |
+        echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
+          --username "${{ secrets.ALIYUN_USERNAME }}" \
+          --password-stdin \
+          registry.cn-hangzhou.aliyuncs.com
+
+    - name: Process images
+      run: |
+        set +e
+        set -x
+        
+        count=$(jq 'length' images-small.json)
+        echo "Found $count images to process"
+        
+        for i in $(seq 0 $((count-1))); do
+          echo "=== Processing image $((i+1))/$count ==="
+          
+          source=$(jq -r ".[$i].source" images-small.json)
+          target=$(jq -r ".[$i].target" images-small.json)
+          tag_count=$(jq ".[$i].tags | length" images-small.json)
+          
+          if [ "$source" = "null" ] || [ "$target" = "null" ]; then
+            echo "❌ Invalid data at index $i"
+            continue
+          fi
+          
+          # 检查是否包含 amd64 架构
+          has_amd64=$(jq -r ".[$i].architectures[]" images-small.json | grep -q "amd64" && echo "true" || echo "false")
+          
+          if [ "$has_amd64" != "true" ]; then
+            echo "⏭️  Skipping image $target (no amd64 architecture)"
+            continue
+          fi
+          
+          for j in $(seq 0 $((tag_count-1))); do
+            tag=$(jq -r ".[$i].tags[$j]" images-small.json)
+            
+            # 构建源镜像名称
+            if echo "$source" | grep -q ":"; then
+              source_image="$source"
+            else
+              source_image="${source}:${tag}"
+            fi
+            
+            arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}-amd64"
+            
+            echo "📥 Pulling $source_image (amd64) to $arch_target"
+            
+            # 拉取 amd64 架构的镜像
+            if timeout 3600 docker pull --platform linux/amd64 "$source_image" 2>&1; then
+              # 打标签
+              docker tag "$source_image" "$arch_target"
+              
+              # 推送
+              if timeout 1800 docker push "$arch_target" 2>&1; then
+                echo "✅ Successfully pushed amd64 version"
+                
+                # 清理本地镜像
+                echo "🧹 Cleaning up local images..."
+                docker rmi "$source_image" "$arch_target" 2>/dev/null || true
+                docker system prune -af >/dev/null 2>&1 || true
+              else
+                echo "❌ Failed to push amd64 version"
+                docker rmi "$source_image" "$arch_target" 2>/dev/null || true
+              fi
+            else
+              echo "❌ Failed to pull amd64 version"
+            fi
+          done
+          
+          # 每个镜像处理完后清理
+          echo "🧹 Cleaning up after image $((i+1))..."
+          docker system prune -af >/dev/null 2>&1 || true
+          echo "=== Disk space after cleanup ==="
+          df -h
+        done
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🏁 Processing completed"
+        echo "=== Final disk space ==="
+        df -h
+

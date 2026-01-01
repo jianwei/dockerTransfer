@@ -39,7 +39,8 @@
         "target": "nginx",
         "tags": [
             "latest",
-            "1.25.2"
+            "1.25.2",
+            "1.29.1-alpine"
         ],
         "architectures": [
             "amd64",
@@ -75,7 +76,8 @@
         "source": "redis",
         "target": "redis",
         "tags": [
-            "8.0.2"
+            "8.0.2",
+            "6.2.20-alpine"
         ],
         "architectures": [
             "amd64",
@@ -246,6 +248,72 @@
         ],
         "architectures": [
             "amd64"
+        ]
+    },
+    {
+        "source": "registry.gitlab.com/egos-tech/smtp",
+        "target": "smtp",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "memcached",
+        "target": "memcached",
+        "tags": [
+            "1.6.26-alpine"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "postgres",
+        "target": "postgres",
+        "tags": [
+            "14.19-bookworm"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "edoburu/pgbouncer",
+        "target": "pgbouncer",
+        "tags": [
+            "v1.24.1-p1"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "confluentinc/cp-kafka",
+        "target": "kafka",
+        "tags": [
+            "7.6.6"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "chrislusf/seaweedfs",
+        "target": "seaweedfs",
+        "tags": [
+            "3.97_large_disk"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
         ]
     }
     
