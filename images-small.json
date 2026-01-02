@@ -1,5 +1,16 @@
 [
     {
+        "source": "altinity/clickhouse-server",
+        "target": "clickhouse-server",
+        "tags": [
+            "25.3.6.10034.altinitystable"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "getsentry/sentry-cli",
         "target": "sentry-cli",
         "tags": [
