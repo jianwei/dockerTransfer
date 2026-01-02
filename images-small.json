@@ -21,6 +21,17 @@
         ]
     },
     {
+        "source": "debian",
+        "target": "debian",
+        "tags": [
+            "bookworm-slim"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "centos",
         "target": "centos",
         "tags": [
@@ -310,6 +321,83 @@
         "target": "seaweedfs",
         "tags": [
             "3.97_large_disk"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/sentry",
+        "target": "sentry",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/snuba",
+        "target": "snuba",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/relay",
+        "target": "relay",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/symbolicator",
+        "target": "symbolicator",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/taskbroker",
+        "target": "taskbroker",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/vroom",
+        "target": "vroom",
+        "tags": [
+            "nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "ghcr.io/getsentry/uptime-checker",
+        "target": "uptime-checker",
+        "tags": [
+            "nightly"
         ],
         "architectures": [
             "amd64",
