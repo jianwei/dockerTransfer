@@ -1,5 +1,16 @@
 [
     {
+        "source": "getsentry/sentry-cli",
+        "target": "sentry-cli",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "yanwk/comfyui-boot",
         "target": "comfyui-boot",
         "tags": [
