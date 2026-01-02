@@ -11,6 +11,17 @@
         ]
     },
     {
+        "source": "busybox",
+        "target": "busybox",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "yanwk/comfyui-boot",
         "target": "comfyui-boot",
         "tags": [
