@@ -329,7 +329,7 @@
     },
     {
         "source": "confluentinc/cp-kafka",
-        "target": "kafka",
+        "target": "cp-kafka",
         "tags": [
             "7.6.6"
         ],
