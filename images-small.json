@@ -436,6 +436,16 @@
             "amd64",
             "arm64"
         ]
+    },
+    {
+        "source": "mkbehr/clawdbot",
+        "target": "clawdbot",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     }
-    
 ]
