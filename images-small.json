@@ -447,5 +447,16 @@
             "amd64",
             "arm64"
         ]
+    },
+    {
+        "source": "alpine/openclaw",
+        "target": "openclaw",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     }
 ]
