@@ -458,5 +458,17 @@
             "amd64",
             "arm64"
         ]
+    },
+    {
+        "source": "litellm/litellm",
+        "target": "litellm",
+        "tags": [
+            "latest",
+            "v1.81.11-nightly"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     }
 ]
