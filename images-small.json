@@ -1,5 +1,38 @@
 [
     {
+        "source": "docker.litellm.ai/berriai/litellm",
+        "target": "litellm",
+        "tags": [
+            "main-stable"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "postgres",
+        "target": "postgres",
+        "tags": [
+            "16"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
+        "source": "prom/prometheus",
+        "target": "prometheus",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
+    },
+    {
         "source": "altinity/clickhouse-server",
         "target": "clickhouse-server",
         "tags": [
