@@ -18,85 +18,149 @@ jobs:
       run: |
         echo "=== Initial disk space ==="
         df -h
-        
+
         sudo apt-get update
-        sudo apt-get install -y jq
-        
+        sudo apt-get install -y jq skopeo
+
         echo "=== Disk space after install ==="
         df -h
 
     - name: Login to Alibaba Cloud Container Registry
       run: |
+        # Docker login (保留用于清理命令)
         echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
           --username "${{ secrets.ALIYUN_USERNAME }}" \
           --password-stdin \
+          registry.cn-hangzhou.aliyuncs.com
+
+        # Skopeo login
+        skopeo login \
+          --username "${{ secrets.ALIYUN_USERNAME }}" \
+          --password "${{ secrets.ALIYUN_PASSWORD }}" \
           registry.cn-hangzhou.aliyuncs.com
 
     - name: Process images
       run: |
         set +e
         set -x
-        
+
         count=$(jq 'length' images-small.json)
         echo "Found $count images to process"
-        
+
         for i in $(seq 0 $((count-1))); do
           echo "=== Processing image $((i+1))/$count ==="
-          
+
           source=$(jq -r ".[$i].source" images-small.json)
           target=$(jq -r ".[$i].target" images-small.json)
           tag_count=$(jq ".[$i].tags | length" images-small.json)
-          
+
           if [ "$source" = "null" ] || [ "$target" = "null" ]; then
             echo "❌ Invalid data at index $i"
             continue
           fi
-          
+
           # 检查是否包含 amd64 架构
           has_amd64=$(jq -r ".[$i].architectures[]" images-small.json | grep -q "amd64" && echo "true" || echo "false")
-          
+
           if [ "$has_amd64" != "true" ]; then
             echo "⏭️  Skipping image $target (no amd64 architecture)"
             continue
           fi
-          
+
           for j in $(seq 0 $((tag_count-1))); do
             tag=$(jq -r ".[$i].tags[$j]" images-small.json)
-            
+
             # 构建源镜像名称
             if echo "$source" | grep -q ":"; then
               source_image="$source"
             else
               source_image="${source}:${tag}"
             fi
-            
+
             arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}"
-            
-            echo "📥 Pulling $source_image (amd64) to $arch_target"
-            
-            # 拉取 amd64 架构的镜像
-            if timeout 3600 docker pull --platform linux/amd64 "$source_image" 2>&1; then
-              # 打标签
-              docker tag "$source_image" "$arch_target"
-              
-              # 推送
-              if timeout 1800 docker push "$arch_target" 2>&1; then
-                echo "✅ Successfully pushed amd64 version"
-                
-                # 清理本地镜像
-                echo "🧹 Cleaning up local images..."
-                docker rmi "$source_image" "$arch_target" 2>/dev/null || true
-                docker system prune -af >/dev/null 2>&1 || true
+
+            echo "📥 Syncing $source_image (amd64) to $arch_target"
+
+            # 检查源镜像的 manifest
+            echo "📋 Inspecting source image manifest..."
+            source_manifest=$(skopeo inspect --raw "docker://$source_image" 2>/dev/null || echo "")
+
+            if [ -z "$source_manifest" ]; then
+              echo "❌ Failed to inspect source image: $source_image"
+              continue
+            fi
+
+            # 检查是否是多架构镜像
+            if echo "$source_manifest" | jq -e '.manifests' > /dev/null 2>&1; then
+              echo "📊 Source is a multi-arch image, extracting amd64 digest..."
+
+              # 获取 amd64 架构的 digest
+              amd64_digest=$(echo "$source_manifest" | jq -r '.manifests[] | select(.platform.architecture == "amd64" and .platform.os == "linux") | .digest' | head -n1)
+
+              if [ -z "$amd64_digest" ] || [ "$amd64_digest" = "null" ]; then
+                echo "❌ No amd64 architecture found in manifest"
+                continue
+              fi
+
+              echo "✅ Found amd64 digest: $amd64_digest"
+
+              # 提取镜像名称（去掉标签）
+              if echo "$source_image" | grep -q ":"; then
+                image_name=$(echo "$source_image" | sed 's/:[^@]*$//')
               else
-                echo "❌ Failed to push amd64 version"
-                docker rmi "$source_image" "$arch_target" 2>/dev/null || true
+                image_name="$source_image"
+              fi
+
+              # 使用 skopeo 直接复制特定架构的镜像
+              echo "📤 Copying amd64 image via skopeo..."
+              if timeout 3600 skopeo copy \
+                --src-tls-verify=false \
+                --dest-tls-verify=false \
+                --retry-times 5 \
+                "docker://${image_name}@${amd64_digest}" \
+                "docker://$arch_target" 2>&1; then
+                echo "✅ Successfully synced amd64 version via skopeo"
+              else
+                copy_exit_code=$?
+                if [ $copy_exit_code -eq 124 ]; then
+                  echo "⏱️  Copy timed out after 60 minutes"
+                else
+                  echo "❌ Failed to copy amd64 version (exit code: $copy_exit_code)"
+                fi
+                continue
               fi
             else
-              echo "❌ Failed to pull amd64 version"
+              echo "📊 Source is a single-arch image, copying directly..."
+
+              # 单架构镜像，直接复制
+              if timeout 3600 skopeo copy \
+                --src-tls-verify=false \
+                --dest-tls-verify=false \
+                --retry-times 5 \
+                "docker://$source_image" \
+                "docker://$arch_target" 2>&1; then
+                echo "✅ Successfully synced image via skopeo"
+              else
+                copy_exit_code=$?
+                echo "❌ Failed to copy image (exit code: $copy_exit_code)"
+                continue
+              fi
+            fi
+
+            # 验证目标镜像
+            echo "🔍 Verifying target image..."
+            if skopeo inspect "docker://$arch_target" >/dev/null 2>&1; then
+              echo "✅ Target image verified successfully"
+
+              # 显示镜像大小
+              image_size=$(skopeo inspect "docker://$arch_target" 2>/dev/null | jq -r '.Layers // [] | length')
+              echo "📊 Image has $image_size layers"
+            else
+              echo "⚠️  Warning: Target image verification failed"
             fi
           done
-          
-          # 每个镜像处理完后清理
+
+          # 清理磁盘空间
           echo "🧹 Cleaning up after image $((i+1))..."
           docker system prune -af >/dev/null 2>&1 || true
           echo "=== Disk space after cleanup ==="
