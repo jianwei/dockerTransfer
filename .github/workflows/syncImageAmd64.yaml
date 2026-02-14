@@ -9,7 +9,7 @@ jobs:
   sync-images:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -22,12 +22,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq skopeo
 
+        # 设置 Docker buildx 用于创建 manifest
+        docker buildx create --use --name mybuilder --driver docker-container 2>/dev/null || docker buildx use mybuilder
+
         echo "=== Disk space after install ==="
         df -h
 
     - name: Login to Alibaba Cloud Container Registry
       run: |
-        # Docker login (保留用于清理命令)
+        # Docker login
         echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
           --username "${{ secrets.ALIYUN_USERNAME }}" \
           --password-stdin \
@@ -77,9 +80,9 @@ jobs:
               source_image="${source}:${tag}"
             fi
 
-            arch_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}"
+            target_image="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}"
 
-            echo "📥 Syncing $source_image (amd64) to $arch_target"
+            echo "📥 Syncing $source_image (amd64) to $target_image"
 
             # 检查源镜像的 manifest
             echo "📋 Inspecting source image manifest..."
@@ -111,15 +114,17 @@ jobs:
                 image_name="$source_image"
               fi
 
-              # 使用 skopeo 直接复制特定架构的镜像
-              echo "📤 Copying amd64 image via skopeo..."
+              # 使用 skopeo 直接复制特定架构的镜像到临时标签
+              temp_target="registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE_GITHUB_BYE_BYE }}/${target}:${tag}-amd64-temp"
+              echo "📤 Copying amd64 image to temp tag..."
+
               if timeout 3600 skopeo copy \
                 --src-tls-verify=false \
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://${image_name}@${amd64_digest}" \
-                "docker://$arch_target" 2>&1; then
-                echo "✅ Successfully synced amd64 version via skopeo"
+                "docker://$temp_target" 2>&1; then
+                echo "✅ Successfully copied amd64 version to temp tag"
               else
                 copy_exit_code=$?
                 if [ $copy_exit_code -eq 124 ]; then
@@ -129,6 +134,17 @@ jobs:
                 fi
                 continue
               fi
+
+              # 使用 docker buildx imagetools 创建带有正确 manifest 的镜像
+              echo "🔗 Creating manifest list for proper display..."
+              if docker buildx imagetools create -t "$target_image" "$temp_target" 2>&1; then
+                echo "✅ Successfully created manifest list"
+              else
+                echo "⚠️  Failed to create manifest list, using temp image directly"
+                # 如果创建失败，直接复制到最终目标
+                skopeo copy --dest-tls-verify=false "docker://$temp_target" "docker://$target_image" 2>&1 || true
+              fi
+
             else
               echo "📊 Source is a single-arch image, copying directly..."
 
@@ -138,7 +154,7 @@ jobs:
                 --dest-tls-verify=false \
                 --retry-times 5 \
                 "docker://$source_image" \
-                "docker://$arch_target" 2>&1; then
+                "docker://$target_image" 2>&1; then
                 echo "✅ Successfully synced image via skopeo"
               else
                 copy_exit_code=$?
@@ -149,12 +165,13 @@ jobs:
 
             # 验证目标镜像
             echo "🔍 Verifying target image..."
-            if skopeo inspect "docker://$arch_target" >/dev/null 2>&1; then
+            if skopeo inspect "docker://$target_image" >/dev/null 2>&1; then
               echo "✅ Target image verified successfully"
 
-              # 显示镜像大小
-              image_size=$(skopeo inspect "docker://$arch_target" 2>/dev/null | jq -r '.Layers // [] | length')
-              echo "📊 Image has $image_size layers"
+              # 显示镜像信息
+              image_layers=$(skopeo inspect "docker://$target_image" 2>/dev/null | jq -r '.Layers // [] | length')
+              image_digest=$(skopeo inspect "docker://$target_image" 2>/dev/null | jq -r '.Digest // "unknown"')
+              echo "📊 Image has $image_layers layers, digest: $image_digest"
             else
               echo "⚠️  Warning: Target image verification failed"
             fi
@@ -173,4 +190,3 @@ jobs:
         echo "🏁 Processing completed"
         echo "=== Final disk space ==="
         df -h
-
