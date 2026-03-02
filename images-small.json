@@ -513,5 +513,16 @@
             "amd64",
             "arm64"
         ]
+    },
+    {
+        "source": "dpage/pgadmin4",
+        "target": "pgadmin4",
+        "tags": [
+            "latest"
+        ],
+        "architectures": [
+            "amd64",
+            "arm64"
+        ]
     }
 ]
